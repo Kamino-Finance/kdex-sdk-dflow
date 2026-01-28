@@ -1,0 +1,41 @@
+[package]
+name = "hyperplane-sdk-dflow"
+version = "0.2.0"
+edition = "2021"
+description = "DFlow AMM interface for Hyperplane pools on Solana"
+license = "MIT"
+authors = ["Kamino Finance"]
+repository = "https://github.com/Kamino-Finance/hyperplane"
+homepage = "https://github.com/Kamino-Finance/hyperplane"
+documentation = "https://docs.rs/hyperplane-sdk-dflow"
+keywords = ["solana", "amm", "defi", "hyperplane", "dflow"]
+categories = ["cryptography::cryptocurrencies", "api-bindings"]
+readme = "README.md"
+
+[dependencies]
+anchor-lang = "0.32.1"
+anchor-spl = "0.32.1"
+solana-sdk = "=2.3.1"
+solana-client = { version = "=2.3.13", optional = true }
+hyperplane = { git = "https://github.com/Kamino-Finance/hyperplane", branch = "feature/jupiter_sdk", features = ["no-entrypoint"] }
+kdex-curve = { path = "../crates/kdex-curve" }
+kdex-client = { path = "../crates/kdex-client", features = ["fetch", "anchor"] }
+thiserror = "1.0"
+scope-types = { git = "https://github.com/Kamino-Finance/scope-private", branch = "solana_2.3.13_anchor_0.32.1" }
+bytemuck = "1.24.0"
+dflow-amm-interface = { git = "https://github.com/DFlowProtocol/dflow-amm-interface", branch = "main" }
+anyhow = "1.0"
+
+[dev-dependencies]
+solana-client = "=2.3.13"
+anyhow = "1.0"
+serde_json = "1.0"
+spl-associated-token-account = "=4.0"
+
+[features]
+default = []
+testing = ["solana-client"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

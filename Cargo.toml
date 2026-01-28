@@ -1,0 +1,14 @@
+[workspace]
+members = [
+    "crates/kdex-curve",
+    "crates/kdex-client",
+    "sdk",
+    "sdk-dflow",
+]
+resolver = "2"
+
+[profile.release]
+overflow-checks = true
+
+[patch.crates-io]
+solana-invoke = { git = "https://github.com/Kamino-Finance/solana-invoke", branch = "feature/program-stubs-0.4.x" }

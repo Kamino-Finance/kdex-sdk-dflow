@@ -1,0 +1,20 @@
+[package]
+name = "kdex-curve"
+version = "0.1.0"
+edition = "2021"
+description = "Shared curve math for KDEX (Hyperplane) AMM pools"
+license = "MIT"
+authors = ["Kamino Finance"]
+repository = "https://github.com/Kamino-Finance/hyperplane"
+keywords = ["solana", "amm", "defi", "kdex", "curve"]
+
+[features]
+default = ["std"]
+std = []
+
+[dependencies]
+# Math utilities (for stable curve U256)
+spl-math = "0.3"
+
+# Error handling
+thiserror = "1.0"
