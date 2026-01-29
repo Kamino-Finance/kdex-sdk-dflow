@@ -482,8 +482,8 @@ where
         signer: Pubkey,
         pool: Pubkey,
         pool_token_amount: u64,
-        minimum_token_a_amount: u64,
-        minimum_token_b_amount: u64,
+        minimum_token_a_amount: Option<u64>,
+        minimum_token_b_amount: Option<u64>,
     ) -> Result<orbit_link::tx_builder::TxBuilder<'_, T, S>> {
         let swap_pool: SwapPool = self.client.get_anchor_account(&pool).await?;
 
@@ -602,6 +602,50 @@ where
             hyperplane::instruction::WithdrawFees {
                 requested_pool_token_amount: requested_withdraw_amount,
             },
+        );
+
+        Ok(tx)
+    }
+
+    pub async fn close_pool(
+        &self,
+        admin: Pubkey,
+        pool: Pubkey,
+    ) -> Result<orbit_link::tx_builder::TxBuilder<'_, T, S>> {
+        let swap_pool: SwapPool = self.client.get_anchor_account(&pool).await?;
+
+        let token_a_token_program = self
+            .determine_token_program(&swap_pool.token_a_mint)
+            .await?;
+        let token_b_token_program = self
+            .determine_token_program(&swap_pool.token_b_mint)
+            .await?;
+        let pool_token_program = spl_token::id();
+
+        let (event_authority, _bump) =
+            Pubkey::find_program_address(&[b"__event_authority"], &self.config.program_id);
+
+        let tx = self.client.tx_builder().add_anchor_ix(
+            &self.config.program_id,
+            hyperplane::accounts::ClosePool {
+                admin,
+                pool,
+                swap_curve: swap_pool.swap_curve,
+                pool_authority: swap_pool.pool_authority,
+                token_a_mint: swap_pool.token_a_mint,
+                token_b_mint: swap_pool.token_b_mint,
+                token_a_vault: swap_pool.token_a_vault,
+                token_b_vault: swap_pool.token_b_vault,
+                pool_token_mint: swap_pool.pool_token_mint,
+                token_a_fees_vault: swap_pool.token_a_fees_vault,
+                token_b_fees_vault: swap_pool.token_b_fees_vault,
+                pool_token_program,
+                token_a_token_program,
+                token_b_token_program,
+                event_authority,
+                program: self.config.program_id,
+            },
+            hyperplane::instruction::ClosePool {},
         );
 
         Ok(tx)

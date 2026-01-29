@@ -8,12 +8,12 @@
 use borsh::BorshDeserialize;
 use borsh::BorshSerialize;
 
-pub const WITHDRAW_DISCRIMINATOR: [u8; 8] = [183, 18, 70, 156, 148, 109, 161, 34];
+pub const CLOSE_POOL_DISCRIMINATOR: [u8; 8] = [140, 189, 209, 23, 239, 62, 239, 11];
 
 /// Accounts.
 #[derive(Debug)]
-pub struct Withdraw {
-    pub signer: solana_pubkey::Pubkey,
+pub struct ClosePool {
+    pub admin: solana_pubkey::Pubkey,
 
     pub pool: solana_pubkey::Pubkey,
 
@@ -30,21 +30,15 @@ pub struct Withdraw {
     pub token_b_vault: solana_pubkey::Pubkey,
 
     pub pool_token_mint: solana_pubkey::Pubkey,
-    /// Account to collect fees into
+
     pub token_a_fees_vault: solana_pubkey::Pubkey,
-    /// Account to collect fees into
+
     pub token_b_fees_vault: solana_pubkey::Pubkey,
-    /// Signer's token A token account
-    pub token_a_user_ata: solana_pubkey::Pubkey,
-    /// Signer's token B token account
-    pub token_b_user_ata: solana_pubkey::Pubkey,
-    /// Signer's pool token account
-    pub pool_token_user_ata: solana_pubkey::Pubkey,
     /// Token program for the pool token mint
     pub pool_token_program: solana_pubkey::Pubkey,
-    /// Token program for the source mint
+    /// Token program for the token A mint
     pub token_a_token_program: solana_pubkey::Pubkey,
-    /// Token program for the destination mint
+    /// Token program for the token B mint
     pub token_b_token_program: solana_pubkey::Pubkey,
 
     pub event_authority: solana_pubkey::Pubkey,
@@ -52,24 +46,20 @@ pub struct Withdraw {
     pub program: solana_pubkey::Pubkey,
 }
 
-impl Withdraw {
-    pub fn instruction(&self, args: WithdrawInstructionArgs) -> solana_instruction::Instruction {
-        self.instruction_with_remaining_accounts(args, &[])
+impl ClosePool {
+    pub fn instruction(&self) -> solana_instruction::Instruction {
+        self.instruction_with_remaining_accounts(&[])
     }
     #[allow(clippy::arithmetic_side_effects)]
     #[allow(clippy::vec_init_then_push)]
     pub fn instruction_with_remaining_accounts(
         &self,
-        args: WithdrawInstructionArgs,
         remaining_accounts: &[solana_instruction::AccountMeta],
     ) -> solana_instruction::Instruction {
-        let mut accounts = Vec::with_capacity(19 + remaining_accounts.len());
-        accounts.push(solana_instruction::AccountMeta::new(self.signer, true));
+        let mut accounts = Vec::with_capacity(16 + remaining_accounts.len());
+        accounts.push(solana_instruction::AccountMeta::new(self.admin, true));
         accounts.push(solana_instruction::AccountMeta::new(self.pool, false));
-        accounts.push(solana_instruction::AccountMeta::new_readonly(
-            self.swap_curve,
-            false,
-        ));
+        accounts.push(solana_instruction::AccountMeta::new(self.swap_curve, false));
         accounts.push(solana_instruction::AccountMeta::new_readonly(
             self.pool_authority,
             false,
@@ -102,18 +92,6 @@ impl Withdraw {
             self.token_b_fees_vault,
             false,
         ));
-        accounts.push(solana_instruction::AccountMeta::new(
-            self.token_a_user_ata,
-            false,
-        ));
-        accounts.push(solana_instruction::AccountMeta::new(
-            self.token_b_user_ata,
-            false,
-        ));
-        accounts.push(solana_instruction::AccountMeta::new(
-            self.pool_token_user_ata,
-            false,
-        ));
         accounts.push(solana_instruction::AccountMeta::new_readonly(
             self.pool_token_program,
             false,
@@ -135,9 +113,7 @@ impl Withdraw {
             false,
         ));
         accounts.extend_from_slice(remaining_accounts);
-        let mut data = WithdrawInstructionData::new().try_to_vec().unwrap();
-        let mut args = args.try_to_vec().unwrap();
-        data.append(&mut args);
+        let data = ClosePoolInstructionData::new().try_to_vec().unwrap();
 
         solana_instruction::Instruction {
             program_id: crate::HYPERPLANE_ID,
@@ -149,14 +125,14 @@ impl Withdraw {
 
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct WithdrawInstructionData {
+pub struct ClosePoolInstructionData {
     discriminator: [u8; 8],
 }
 
-impl WithdrawInstructionData {
+impl ClosePoolInstructionData {
     pub fn new() -> Self {
         Self {
-            discriminator: [183, 18, 70, 156, 148, 109, 161, 34],
+            discriminator: [140, 189, 209, 23, 239, 62, 239, 11],
         }
     }
 
@@ -165,33 +141,19 @@ impl WithdrawInstructionData {
     }
 }
 
-impl Default for WithdrawInstructionData {
+impl Default for ClosePoolInstructionData {
     fn default() -> Self {
         Self::new()
     }
 }
 
-#[derive(BorshSerialize, BorshDeserialize, Clone, Debug, Eq, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct WithdrawInstructionArgs {
-    pub pool_token_amount: u64,
-    pub minimum_token_a_amount: Option<u64>,
-    pub minimum_token_b_amount: Option<u64>,
-}
-
-impl WithdrawInstructionArgs {
-    pub(crate) fn try_to_vec(&self) -> Result<Vec<u8>, std::io::Error> {
-        borsh::to_vec(self)
-    }
-}
-
-/// Instruction builder for `Withdraw`.
+/// Instruction builder for `ClosePool`.
 ///
 /// ### Accounts:
 ///
-///   0. `[writable, signer]` signer
+///   0. `[writable, signer]` admin
 ///   1. `[writable]` pool
-///   2. `[]` swap_curve
+///   2. `[writable]` swap_curve
 ///   3. `[]` pool_authority
 ///   4. `[]` token_a_mint
 ///   5. `[]` token_b_mint
@@ -200,17 +162,14 @@ impl WithdrawInstructionArgs {
 ///   8. `[writable]` pool_token_mint
 ///   9. `[writable]` token_a_fees_vault
 ///   10. `[writable]` token_b_fees_vault
-///   11. `[writable]` token_a_user_ata
-///   12. `[writable]` token_b_user_ata
-///   13. `[writable]` pool_token_user_ata
-///   14. `[]` pool_token_program
-///   15. `[]` token_a_token_program
-///   16. `[]` token_b_token_program
-///   17. `[]` event_authority
-///   18. `[]` program
+///   11. `[]` pool_token_program
+///   12. `[]` token_a_token_program
+///   13. `[]` token_b_token_program
+///   14. `[]` event_authority
+///   15. `[]` program
 #[derive(Clone, Debug, Default)]
-pub struct WithdrawBuilder {
-    signer: Option<solana_pubkey::Pubkey>,
+pub struct ClosePoolBuilder {
+    admin: Option<solana_pubkey::Pubkey>,
     pool: Option<solana_pubkey::Pubkey>,
     swap_curve: Option<solana_pubkey::Pubkey>,
     pool_authority: Option<solana_pubkey::Pubkey>,
@@ -221,27 +180,21 @@ pub struct WithdrawBuilder {
     pool_token_mint: Option<solana_pubkey::Pubkey>,
     token_a_fees_vault: Option<solana_pubkey::Pubkey>,
     token_b_fees_vault: Option<solana_pubkey::Pubkey>,
-    token_a_user_ata: Option<solana_pubkey::Pubkey>,
-    token_b_user_ata: Option<solana_pubkey::Pubkey>,
-    pool_token_user_ata: Option<solana_pubkey::Pubkey>,
     pool_token_program: Option<solana_pubkey::Pubkey>,
     token_a_token_program: Option<solana_pubkey::Pubkey>,
     token_b_token_program: Option<solana_pubkey::Pubkey>,
     event_authority: Option<solana_pubkey::Pubkey>,
     program: Option<solana_pubkey::Pubkey>,
-    pool_token_amount: Option<u64>,
-    minimum_token_a_amount: Option<u64>,
-    minimum_token_b_amount: Option<u64>,
     __remaining_accounts: Vec<solana_instruction::AccountMeta>,
 }
 
-impl WithdrawBuilder {
+impl ClosePoolBuilder {
     pub fn new() -> Self {
         Self::default()
     }
     #[inline(always)]
-    pub fn signer(&mut self, signer: solana_pubkey::Pubkey) -> &mut Self {
-        self.signer = Some(signer);
+    pub fn admin(&mut self, admin: solana_pubkey::Pubkey) -> &mut Self {
+        self.admin = Some(admin);
         self
     }
     #[inline(always)]
@@ -284,34 +237,14 @@ impl WithdrawBuilder {
         self.pool_token_mint = Some(pool_token_mint);
         self
     }
-    /// Account to collect fees into
     #[inline(always)]
     pub fn token_a_fees_vault(&mut self, token_a_fees_vault: solana_pubkey::Pubkey) -> &mut Self {
         self.token_a_fees_vault = Some(token_a_fees_vault);
         self
     }
-    /// Account to collect fees into
     #[inline(always)]
     pub fn token_b_fees_vault(&mut self, token_b_fees_vault: solana_pubkey::Pubkey) -> &mut Self {
         self.token_b_fees_vault = Some(token_b_fees_vault);
-        self
-    }
-    /// Signer's token A token account
-    #[inline(always)]
-    pub fn token_a_user_ata(&mut self, token_a_user_ata: solana_pubkey::Pubkey) -> &mut Self {
-        self.token_a_user_ata = Some(token_a_user_ata);
-        self
-    }
-    /// Signer's token B token account
-    #[inline(always)]
-    pub fn token_b_user_ata(&mut self, token_b_user_ata: solana_pubkey::Pubkey) -> &mut Self {
-        self.token_b_user_ata = Some(token_b_user_ata);
-        self
-    }
-    /// Signer's pool token account
-    #[inline(always)]
-    pub fn pool_token_user_ata(&mut self, pool_token_user_ata: solana_pubkey::Pubkey) -> &mut Self {
-        self.pool_token_user_ata = Some(pool_token_user_ata);
         self
     }
     /// Token program for the pool token mint
@@ -320,7 +253,7 @@ impl WithdrawBuilder {
         self.pool_token_program = Some(pool_token_program);
         self
     }
-    /// Token program for the source mint
+    /// Token program for the token A mint
     #[inline(always)]
     pub fn token_a_token_program(
         &mut self,
@@ -329,7 +262,7 @@ impl WithdrawBuilder {
         self.token_a_token_program = Some(token_a_token_program);
         self
     }
-    /// Token program for the destination mint
+    /// Token program for the token B mint
     #[inline(always)]
     pub fn token_b_token_program(
         &mut self,
@@ -346,23 +279,6 @@ impl WithdrawBuilder {
     #[inline(always)]
     pub fn program(&mut self, program: solana_pubkey::Pubkey) -> &mut Self {
         self.program = Some(program);
-        self
-    }
-    #[inline(always)]
-    pub fn pool_token_amount(&mut self, pool_token_amount: u64) -> &mut Self {
-        self.pool_token_amount = Some(pool_token_amount);
-        self
-    }
-    /// `[optional argument]`
-    #[inline(always)]
-    pub fn minimum_token_a_amount(&mut self, minimum_token_a_amount: u64) -> &mut Self {
-        self.minimum_token_a_amount = Some(minimum_token_a_amount);
-        self
-    }
-    /// `[optional argument]`
-    #[inline(always)]
-    pub fn minimum_token_b_amount(&mut self, minimum_token_b_amount: u64) -> &mut Self {
-        self.minimum_token_b_amount = Some(minimum_token_b_amount);
         self
     }
     /// Add an additional account to the instruction.
@@ -382,8 +298,8 @@ impl WithdrawBuilder {
     }
     #[allow(clippy::clone_on_copy)]
     pub fn instruction(&self) -> solana_instruction::Instruction {
-        let accounts = Withdraw {
-            signer: self.signer.expect("signer is not set"),
+        let accounts = ClosePool {
+            admin: self.admin.expect("admin is not set"),
             pool: self.pool.expect("pool is not set"),
             swap_curve: self.swap_curve.expect("swap_curve is not set"),
             pool_authority: self.pool_authority.expect("pool_authority is not set"),
@@ -398,11 +314,6 @@ impl WithdrawBuilder {
             token_b_fees_vault: self
                 .token_b_fees_vault
                 .expect("token_b_fees_vault is not set"),
-            token_a_user_ata: self.token_a_user_ata.expect("token_a_user_ata is not set"),
-            token_b_user_ata: self.token_b_user_ata.expect("token_b_user_ata is not set"),
-            pool_token_user_ata: self
-                .pool_token_user_ata
-                .expect("pool_token_user_ata is not set"),
             pool_token_program: self
                 .pool_token_program
                 .expect("pool_token_program is not set"),
@@ -415,22 +326,14 @@ impl WithdrawBuilder {
             event_authority: self.event_authority.expect("event_authority is not set"),
             program: self.program.expect("program is not set"),
         };
-        let args = WithdrawInstructionArgs {
-            pool_token_amount: self
-                .pool_token_amount
-                .clone()
-                .expect("pool_token_amount is not set"),
-            minimum_token_a_amount: self.minimum_token_a_amount.clone(),
-            minimum_token_b_amount: self.minimum_token_b_amount.clone(),
-        };
 
-        accounts.instruction_with_remaining_accounts(args, &self.__remaining_accounts)
+        accounts.instruction_with_remaining_accounts(&self.__remaining_accounts)
     }
 }
 
-/// `withdraw` CPI accounts.
-pub struct WithdrawCpiAccounts<'a, 'b> {
-    pub signer: &'b solana_account_info::AccountInfo<'a>,
+/// `close_pool` CPI accounts.
+pub struct ClosePoolCpiAccounts<'a, 'b> {
+    pub admin: &'b solana_account_info::AccountInfo<'a>,
 
     pub pool: &'b solana_account_info::AccountInfo<'a>,
 
@@ -447,21 +350,15 @@ pub struct WithdrawCpiAccounts<'a, 'b> {
     pub token_b_vault: &'b solana_account_info::AccountInfo<'a>,
 
     pub pool_token_mint: &'b solana_account_info::AccountInfo<'a>,
-    /// Account to collect fees into
+
     pub token_a_fees_vault: &'b solana_account_info::AccountInfo<'a>,
-    /// Account to collect fees into
+
     pub token_b_fees_vault: &'b solana_account_info::AccountInfo<'a>,
-    /// Signer's token A token account
-    pub token_a_user_ata: &'b solana_account_info::AccountInfo<'a>,
-    /// Signer's token B token account
-    pub token_b_user_ata: &'b solana_account_info::AccountInfo<'a>,
-    /// Signer's pool token account
-    pub pool_token_user_ata: &'b solana_account_info::AccountInfo<'a>,
     /// Token program for the pool token mint
     pub pool_token_program: &'b solana_account_info::AccountInfo<'a>,
-    /// Token program for the source mint
+    /// Token program for the token A mint
     pub token_a_token_program: &'b solana_account_info::AccountInfo<'a>,
-    /// Token program for the destination mint
+    /// Token program for the token B mint
     pub token_b_token_program: &'b solana_account_info::AccountInfo<'a>,
 
     pub event_authority: &'b solana_account_info::AccountInfo<'a>,
@@ -469,12 +366,12 @@ pub struct WithdrawCpiAccounts<'a, 'b> {
     pub program: &'b solana_account_info::AccountInfo<'a>,
 }
 
-/// `withdraw` CPI instruction.
-pub struct WithdrawCpi<'a, 'b> {
+/// `close_pool` CPI instruction.
+pub struct ClosePoolCpi<'a, 'b> {
     /// The program to invoke.
     pub __program: &'b solana_account_info::AccountInfo<'a>,
 
-    pub signer: &'b solana_account_info::AccountInfo<'a>,
+    pub admin: &'b solana_account_info::AccountInfo<'a>,
 
     pub pool: &'b solana_account_info::AccountInfo<'a>,
 
@@ -491,39 +388,30 @@ pub struct WithdrawCpi<'a, 'b> {
     pub token_b_vault: &'b solana_account_info::AccountInfo<'a>,
 
     pub pool_token_mint: &'b solana_account_info::AccountInfo<'a>,
-    /// Account to collect fees into
+
     pub token_a_fees_vault: &'b solana_account_info::AccountInfo<'a>,
-    /// Account to collect fees into
+
     pub token_b_fees_vault: &'b solana_account_info::AccountInfo<'a>,
-    /// Signer's token A token account
-    pub token_a_user_ata: &'b solana_account_info::AccountInfo<'a>,
-    /// Signer's token B token account
-    pub token_b_user_ata: &'b solana_account_info::AccountInfo<'a>,
-    /// Signer's pool token account
-    pub pool_token_user_ata: &'b solana_account_info::AccountInfo<'a>,
     /// Token program for the pool token mint
     pub pool_token_program: &'b solana_account_info::AccountInfo<'a>,
-    /// Token program for the source mint
+    /// Token program for the token A mint
     pub token_a_token_program: &'b solana_account_info::AccountInfo<'a>,
-    /// Token program for the destination mint
+    /// Token program for the token B mint
     pub token_b_token_program: &'b solana_account_info::AccountInfo<'a>,
 
     pub event_authority: &'b solana_account_info::AccountInfo<'a>,
 
     pub program: &'b solana_account_info::AccountInfo<'a>,
-    /// The arguments for the instruction.
-    pub __args: WithdrawInstructionArgs,
 }
 
-impl<'a, 'b> WithdrawCpi<'a, 'b> {
+impl<'a, 'b> ClosePoolCpi<'a, 'b> {
     pub fn new(
         program: &'b solana_account_info::AccountInfo<'a>,
-        accounts: WithdrawCpiAccounts<'a, 'b>,
-        args: WithdrawInstructionArgs,
+        accounts: ClosePoolCpiAccounts<'a, 'b>,
     ) -> Self {
         Self {
             __program: program,
-            signer: accounts.signer,
+            admin: accounts.admin,
             pool: accounts.pool,
             swap_curve: accounts.swap_curve,
             pool_authority: accounts.pool_authority,
@@ -534,15 +422,11 @@ impl<'a, 'b> WithdrawCpi<'a, 'b> {
             pool_token_mint: accounts.pool_token_mint,
             token_a_fees_vault: accounts.token_a_fees_vault,
             token_b_fees_vault: accounts.token_b_fees_vault,
-            token_a_user_ata: accounts.token_a_user_ata,
-            token_b_user_ata: accounts.token_b_user_ata,
-            pool_token_user_ata: accounts.pool_token_user_ata,
             pool_token_program: accounts.pool_token_program,
             token_a_token_program: accounts.token_a_token_program,
             token_b_token_program: accounts.token_b_token_program,
             event_authority: accounts.event_authority,
             program: accounts.program,
-            __args: args,
         }
     }
     #[inline(always)]
@@ -568,10 +452,10 @@ impl<'a, 'b> WithdrawCpi<'a, 'b> {
         signers_seeds: &[&[&[u8]]],
         remaining_accounts: &[(&'b solana_account_info::AccountInfo<'a>, bool, bool)],
     ) -> solana_program_error::ProgramResult {
-        let mut accounts = Vec::with_capacity(19 + remaining_accounts.len());
-        accounts.push(solana_instruction::AccountMeta::new(*self.signer.key, true));
+        let mut accounts = Vec::with_capacity(16 + remaining_accounts.len());
+        accounts.push(solana_instruction::AccountMeta::new(*self.admin.key, true));
         accounts.push(solana_instruction::AccountMeta::new(*self.pool.key, false));
-        accounts.push(solana_instruction::AccountMeta::new_readonly(
+        accounts.push(solana_instruction::AccountMeta::new(
             *self.swap_curve.key,
             false,
         ));
@@ -607,18 +491,6 @@ impl<'a, 'b> WithdrawCpi<'a, 'b> {
             *self.token_b_fees_vault.key,
             false,
         ));
-        accounts.push(solana_instruction::AccountMeta::new(
-            *self.token_a_user_ata.key,
-            false,
-        ));
-        accounts.push(solana_instruction::AccountMeta::new(
-            *self.token_b_user_ata.key,
-            false,
-        ));
-        accounts.push(solana_instruction::AccountMeta::new(
-            *self.pool_token_user_ata.key,
-            false,
-        ));
         accounts.push(solana_instruction::AccountMeta::new_readonly(
             *self.pool_token_program.key,
             false,
@@ -646,18 +518,16 @@ impl<'a, 'b> WithdrawCpi<'a, 'b> {
                 is_writable: remaining_account.2,
             })
         });
-        let mut data = WithdrawInstructionData::new().try_to_vec().unwrap();
-        let mut args = self.__args.try_to_vec().unwrap();
-        data.append(&mut args);
+        let data = ClosePoolInstructionData::new().try_to_vec().unwrap();
 
         let instruction = solana_instruction::Instruction {
             program_id: crate::HYPERPLANE_ID,
             accounts,
             data,
         };
-        let mut account_infos = Vec::with_capacity(20 + remaining_accounts.len());
+        let mut account_infos = Vec::with_capacity(17 + remaining_accounts.len());
         account_infos.push(self.__program.clone());
-        account_infos.push(self.signer.clone());
+        account_infos.push(self.admin.clone());
         account_infos.push(self.pool.clone());
         account_infos.push(self.swap_curve.clone());
         account_infos.push(self.pool_authority.clone());
@@ -668,9 +538,6 @@ impl<'a, 'b> WithdrawCpi<'a, 'b> {
         account_infos.push(self.pool_token_mint.clone());
         account_infos.push(self.token_a_fees_vault.clone());
         account_infos.push(self.token_b_fees_vault.clone());
-        account_infos.push(self.token_a_user_ata.clone());
-        account_infos.push(self.token_b_user_ata.clone());
-        account_infos.push(self.pool_token_user_ata.clone());
         account_infos.push(self.pool_token_program.clone());
         account_infos.push(self.token_a_token_program.clone());
         account_infos.push(self.token_b_token_program.clone());
@@ -688,13 +555,13 @@ impl<'a, 'b> WithdrawCpi<'a, 'b> {
     }
 }
 
-/// Instruction builder for `Withdraw` via CPI.
+/// Instruction builder for `ClosePool` via CPI.
 ///
 /// ### Accounts:
 ///
-///   0. `[writable, signer]` signer
+///   0. `[writable, signer]` admin
 ///   1. `[writable]` pool
-///   2. `[]` swap_curve
+///   2. `[writable]` swap_curve
 ///   3. `[]` pool_authority
 ///   4. `[]` token_a_mint
 ///   5. `[]` token_b_mint
@@ -703,24 +570,21 @@ impl<'a, 'b> WithdrawCpi<'a, 'b> {
 ///   8. `[writable]` pool_token_mint
 ///   9. `[writable]` token_a_fees_vault
 ///   10. `[writable]` token_b_fees_vault
-///   11. `[writable]` token_a_user_ata
-///   12. `[writable]` token_b_user_ata
-///   13. `[writable]` pool_token_user_ata
-///   14. `[]` pool_token_program
-///   15. `[]` token_a_token_program
-///   16. `[]` token_b_token_program
-///   17. `[]` event_authority
-///   18. `[]` program
+///   11. `[]` pool_token_program
+///   12. `[]` token_a_token_program
+///   13. `[]` token_b_token_program
+///   14. `[]` event_authority
+///   15. `[]` program
 #[derive(Clone, Debug)]
-pub struct WithdrawCpiBuilder<'a, 'b> {
-    instruction: Box<WithdrawCpiBuilderInstruction<'a, 'b>>,
+pub struct ClosePoolCpiBuilder<'a, 'b> {
+    instruction: Box<ClosePoolCpiBuilderInstruction<'a, 'b>>,
 }
 
-impl<'a, 'b> WithdrawCpiBuilder<'a, 'b> {
+impl<'a, 'b> ClosePoolCpiBuilder<'a, 'b> {
     pub fn new(program: &'b solana_account_info::AccountInfo<'a>) -> Self {
-        let instruction = Box::new(WithdrawCpiBuilderInstruction {
+        let instruction = Box::new(ClosePoolCpiBuilderInstruction {
             __program: program,
-            signer: None,
+            admin: None,
             pool: None,
             swap_curve: None,
             pool_authority: None,
@@ -731,24 +595,18 @@ impl<'a, 'b> WithdrawCpiBuilder<'a, 'b> {
             pool_token_mint: None,
             token_a_fees_vault: None,
             token_b_fees_vault: None,
-            token_a_user_ata: None,
-            token_b_user_ata: None,
-            pool_token_user_ata: None,
             pool_token_program: None,
             token_a_token_program: None,
             token_b_token_program: None,
             event_authority: None,
             program: None,
-            pool_token_amount: None,
-            minimum_token_a_amount: None,
-            minimum_token_b_amount: None,
             __remaining_accounts: Vec::new(),
         });
         Self { instruction }
     }
     #[inline(always)]
-    pub fn signer(&mut self, signer: &'b solana_account_info::AccountInfo<'a>) -> &mut Self {
-        self.instruction.signer = Some(signer);
+    pub fn admin(&mut self, admin: &'b solana_account_info::AccountInfo<'a>) -> &mut Self {
+        self.instruction.admin = Some(admin);
         self
     }
     #[inline(always)]
@@ -812,7 +670,6 @@ impl<'a, 'b> WithdrawCpiBuilder<'a, 'b> {
         self.instruction.pool_token_mint = Some(pool_token_mint);
         self
     }
-    /// Account to collect fees into
     #[inline(always)]
     pub fn token_a_fees_vault(
         &mut self,
@@ -821,40 +678,12 @@ impl<'a, 'b> WithdrawCpiBuilder<'a, 'b> {
         self.instruction.token_a_fees_vault = Some(token_a_fees_vault);
         self
     }
-    /// Account to collect fees into
     #[inline(always)]
     pub fn token_b_fees_vault(
         &mut self,
         token_b_fees_vault: &'b solana_account_info::AccountInfo<'a>,
     ) -> &mut Self {
         self.instruction.token_b_fees_vault = Some(token_b_fees_vault);
-        self
-    }
-    /// Signer's token A token account
-    #[inline(always)]
-    pub fn token_a_user_ata(
-        &mut self,
-        token_a_user_ata: &'b solana_account_info::AccountInfo<'a>,
-    ) -> &mut Self {
-        self.instruction.token_a_user_ata = Some(token_a_user_ata);
-        self
-    }
-    /// Signer's token B token account
-    #[inline(always)]
-    pub fn token_b_user_ata(
-        &mut self,
-        token_b_user_ata: &'b solana_account_info::AccountInfo<'a>,
-    ) -> &mut Self {
-        self.instruction.token_b_user_ata = Some(token_b_user_ata);
-        self
-    }
-    /// Signer's pool token account
-    #[inline(always)]
-    pub fn pool_token_user_ata(
-        &mut self,
-        pool_token_user_ata: &'b solana_account_info::AccountInfo<'a>,
-    ) -> &mut Self {
-        self.instruction.pool_token_user_ata = Some(pool_token_user_ata);
         self
     }
     /// Token program for the pool token mint
@@ -866,7 +695,7 @@ impl<'a, 'b> WithdrawCpiBuilder<'a, 'b> {
         self.instruction.pool_token_program = Some(pool_token_program);
         self
     }
-    /// Token program for the source mint
+    /// Token program for the token A mint
     #[inline(always)]
     pub fn token_a_token_program(
         &mut self,
@@ -875,7 +704,7 @@ impl<'a, 'b> WithdrawCpiBuilder<'a, 'b> {
         self.instruction.token_a_token_program = Some(token_a_token_program);
         self
     }
-    /// Token program for the destination mint
+    /// Token program for the token B mint
     #[inline(always)]
     pub fn token_b_token_program(
         &mut self,
@@ -895,23 +724,6 @@ impl<'a, 'b> WithdrawCpiBuilder<'a, 'b> {
     #[inline(always)]
     pub fn program(&mut self, program: &'b solana_account_info::AccountInfo<'a>) -> &mut Self {
         self.instruction.program = Some(program);
-        self
-    }
-    #[inline(always)]
-    pub fn pool_token_amount(&mut self, pool_token_amount: u64) -> &mut Self {
-        self.instruction.pool_token_amount = Some(pool_token_amount);
-        self
-    }
-    /// `[optional argument]`
-    #[inline(always)]
-    pub fn minimum_token_a_amount(&mut self, minimum_token_a_amount: u64) -> &mut Self {
-        self.instruction.minimum_token_a_amount = Some(minimum_token_a_amount);
-        self
-    }
-    /// `[optional argument]`
-    #[inline(always)]
-    pub fn minimum_token_b_amount(&mut self, minimum_token_b_amount: u64) -> &mut Self {
-        self.instruction.minimum_token_b_amount = Some(minimum_token_b_amount);
         self
     }
     /// Add an additional account to the instruction.
@@ -948,19 +760,10 @@ impl<'a, 'b> WithdrawCpiBuilder<'a, 'b> {
     #[allow(clippy::clone_on_copy)]
     #[allow(clippy::vec_init_then_push)]
     pub fn invoke_signed(&self, signers_seeds: &[&[&[u8]]]) -> solana_program_error::ProgramResult {
-        let args = WithdrawInstructionArgs {
-            pool_token_amount: self
-                .instruction
-                .pool_token_amount
-                .clone()
-                .expect("pool_token_amount is not set"),
-            minimum_token_a_amount: self.instruction.minimum_token_a_amount.clone(),
-            minimum_token_b_amount: self.instruction.minimum_token_b_amount.clone(),
-        };
-        let instruction = WithdrawCpi {
+        let instruction = ClosePoolCpi {
             __program: self.instruction.__program,
 
-            signer: self.instruction.signer.expect("signer is not set"),
+            admin: self.instruction.admin.expect("admin is not set"),
 
             pool: self.instruction.pool.expect("pool is not set"),
 
@@ -1006,21 +809,6 @@ impl<'a, 'b> WithdrawCpiBuilder<'a, 'b> {
                 .token_b_fees_vault
                 .expect("token_b_fees_vault is not set"),
 
-            token_a_user_ata: self
-                .instruction
-                .token_a_user_ata
-                .expect("token_a_user_ata is not set"),
-
-            token_b_user_ata: self
-                .instruction
-                .token_b_user_ata
-                .expect("token_b_user_ata is not set"),
-
-            pool_token_user_ata: self
-                .instruction
-                .pool_token_user_ata
-                .expect("pool_token_user_ata is not set"),
-
             pool_token_program: self
                 .instruction
                 .pool_token_program
@@ -1042,7 +830,6 @@ impl<'a, 'b> WithdrawCpiBuilder<'a, 'b> {
                 .expect("event_authority is not set"),
 
             program: self.instruction.program.expect("program is not set"),
-            __args: args,
         };
         instruction.invoke_signed_with_remaining_accounts(
             signers_seeds,
@@ -1052,9 +839,9 @@ impl<'a, 'b> WithdrawCpiBuilder<'a, 'b> {
 }
 
 #[derive(Clone, Debug)]
-struct WithdrawCpiBuilderInstruction<'a, 'b> {
+struct ClosePoolCpiBuilderInstruction<'a, 'b> {
     __program: &'b solana_account_info::AccountInfo<'a>,
-    signer: Option<&'b solana_account_info::AccountInfo<'a>>,
+    admin: Option<&'b solana_account_info::AccountInfo<'a>>,
     pool: Option<&'b solana_account_info::AccountInfo<'a>>,
     swap_curve: Option<&'b solana_account_info::AccountInfo<'a>>,
     pool_authority: Option<&'b solana_account_info::AccountInfo<'a>>,
@@ -1065,17 +852,11 @@ struct WithdrawCpiBuilderInstruction<'a, 'b> {
     pool_token_mint: Option<&'b solana_account_info::AccountInfo<'a>>,
     token_a_fees_vault: Option<&'b solana_account_info::AccountInfo<'a>>,
     token_b_fees_vault: Option<&'b solana_account_info::AccountInfo<'a>>,
-    token_a_user_ata: Option<&'b solana_account_info::AccountInfo<'a>>,
-    token_b_user_ata: Option<&'b solana_account_info::AccountInfo<'a>>,
-    pool_token_user_ata: Option<&'b solana_account_info::AccountInfo<'a>>,
     pool_token_program: Option<&'b solana_account_info::AccountInfo<'a>>,
     token_a_token_program: Option<&'b solana_account_info::AccountInfo<'a>>,
     token_b_token_program: Option<&'b solana_account_info::AccountInfo<'a>>,
     event_authority: Option<&'b solana_account_info::AccountInfo<'a>>,
     program: Option<&'b solana_account_info::AccountInfo<'a>>,
-    pool_token_amount: Option<u64>,
-    minimum_token_a_amount: Option<u64>,
-    minimum_token_b_amount: Option<u64>,
     /// Additional instruction accounts `(AccountInfo, is_writable, is_signer)`.
     __remaining_accounts: Vec<(&'b solana_account_info::AccountInfo<'a>, bool, bool)>,
 }

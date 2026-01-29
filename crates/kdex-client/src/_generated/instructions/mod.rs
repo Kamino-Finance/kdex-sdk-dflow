@@ -5,6 +5,7 @@
 //! <https://github.com/codama-idl/codama>
 //!
 
+pub(crate) mod r#close_pool;
 pub(crate) mod r#deposit;
 pub(crate) mod r#initialize_pool;
 pub(crate) mod r#swap;
@@ -12,6 +13,7 @@ pub(crate) mod r#update_pool_config;
 pub(crate) mod r#withdraw;
 pub(crate) mod r#withdraw_fees;
 
+pub use self::r#close_pool::*;
 pub use self::r#deposit::*;
 pub use self::r#initialize_pool::*;
 pub use self::r#swap::*;

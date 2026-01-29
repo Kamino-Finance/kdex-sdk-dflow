@@ -5,6 +5,7 @@
 //! <https://github.com/codama-idl/codama>
 //!
 
+pub(crate) mod r#close_pool;
 pub(crate) mod r#curve_user_parameters;
 pub(crate) mod r#deposit;
 pub(crate) mod r#fees;
@@ -16,6 +17,7 @@ pub(crate) mod r#update_pool_config_value;
 pub(crate) mod r#withdraw;
 pub(crate) mod r#withdraw_fees;
 
+pub use self::r#close_pool::*;
 pub use self::r#curve_user_parameters::*;
 pub use self::r#deposit::*;
 pub use self::r#fees::*;
