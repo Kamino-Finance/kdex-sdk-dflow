@@ -223,6 +223,13 @@ impl HyperplaneAmm {
             .get(&self.pool.swap_curve)
             .ok_or_else(|| anyhow::anyhow!("Curve account not found: {}", self.pool.swap_curve))?;
 
+        // Determine destination vault amount
+        let destination_vault_amount = if quote_params.input_mint == self.pool.token_a_mint {
+            token_b_amount
+        } else {
+            token_a_amount
+        };
+
         // Calculate quote based on curve type
         let (_in_amount, out_amount, _total_fees) = match self.pool.curve_type() {
             CurveType::ConstantSpreadOracle => {
@@ -240,6 +247,7 @@ impl HyperplaneAmm {
                 oracle::calculate_constant_spread_quote(
                     &self.pool.fees,
                     quote_params.amount,
+                    destination_vault_amount,
                     trade_direction,
                     &curve_account.data,
                     scope_account,
@@ -263,6 +271,7 @@ impl HyperplaneAmm {
                     &self.pool.fees,
                     quote_params.amount,
                     source_vault_amount,
+                    destination_vault_amount,
                     trade_direction,
                     &curve_account.data,
                     scope_account,
@@ -523,11 +532,11 @@ impl Amm for HyperplaneAmm {
                             _ => anyhow::bail!("Token vaults not updated. Call update() first."),
                         };
 
-                    let (trade_direction, source_vault_amount) =
+                    let (trade_direction, source_vault_amount, destination_vault_amount) =
                         if quote_params.input_mint == self.pool.token_a_mint {
-                            (TradeDirection::AtoB, token_a_amount)
+                            (TradeDirection::AtoB, token_a_amount, token_b_amount)
                         } else if quote_params.input_mint == self.pool.token_b_mint {
-                            (TradeDirection::BtoA, token_b_amount)
+                            (TradeDirection::BtoA, token_b_amount, token_a_amount)
                         } else {
                             anyhow::bail!(
                                 "Invalid mint: {}. Expected one of pool mints (A: {}, B: {})",
@@ -541,6 +550,7 @@ impl Amm for HyperplaneAmm {
                         CurveType::ConstantSpreadOracle => oracle::calculate_constant_spread_quote(
                             &self.pool.fees,
                             quote_params.amount,
+                            destination_vault_amount,
                             trade_direction,
                             curve_data,
                             scope_account,
@@ -549,6 +559,7 @@ impl Amm for HyperplaneAmm {
                             &self.pool.fees,
                             quote_params.amount,
                             source_vault_amount,
+                            destination_vault_amount,
                             trade_direction,
                             curve_data,
                             scope_account,

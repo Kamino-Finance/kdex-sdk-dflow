@@ -251,6 +251,49 @@ fn run_pool_tests() -> anyhow::Result<()> {
             }
         }
 
+        // Test quote with amount exceeding liquidity
+        println!("\n  Testing quote with excessive amount (liquidity check):");
+        let excessive_amount = u64::MAX / 2; // Very large amount
+        let result = if is_oracle {
+            amm.quote_oracle(
+                &QuoteParams {
+                    input_mint: mints[0],
+                    output_mint: mints[1],
+                    amount: excessive_amount,
+                    swap_mode: SwapMode::ExactIn,
+                },
+                &oracle_accounts_map,
+            )
+        } else {
+            amm.quote(&QuoteParams {
+                input_mint: mints[0],
+                output_mint: mints[1],
+                amount: excessive_amount,
+                swap_mode: SwapMode::ExactIn,
+            })
+        };
+
+        match result {
+            Ok(quote) => {
+                // For AMM curves, the math naturally limits output
+                // For oracle curves, should return InsufficientLiquidity error
+                println!(
+                    "    Quote returned: {} in -> {} out (output may be capped by liquidity)",
+                    excessive_amount, quote.out_amount
+                );
+            }
+            Err(e) => {
+                // Expected for oracle curves when exceeding liquidity
+                if format!("{}", e).contains("liquidity")
+                    || format!("{}", e).contains("Insufficient")
+                {
+                    println!("    Quote correctly rejected excessive amount: {}", e);
+                } else {
+                    println!("    Quote failed (may be expected): {}", e);
+                }
+            }
+        }
+
         // Test performance optimization
         println!("\n  Testing update_if_changed() performance:");
         match amm.update_if_changed(&accounts_map) {

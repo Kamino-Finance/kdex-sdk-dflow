@@ -150,6 +150,7 @@ pub fn fetch_scope_price_chain(
 /// # Arguments
 /// * `fees` - Pool fees configuration
 /// * `amount_in` - Amount to swap in
+/// * `destination_vault_amount` - Current balance in destination vault (for liquidity check)
 /// * `trade_direction` - Direction of the trade
 /// * `curve_data` - Raw curve account data
 /// * `scope_price_feed_account` - Scope oracle account
@@ -159,6 +160,7 @@ pub fn fetch_scope_price_chain(
 pub fn calculate_constant_spread_quote(
     fees: &Fees,
     amount_in: u64,
+    destination_vault_amount: u64,
     trade_direction: hyperplane::curve::calculator::TradeDirection,
     curve_data: &[u8],
     scope_price_feed_account: &Account,
@@ -198,6 +200,14 @@ pub fn calculate_constant_spread_quote(
     )
     .map_err(|e| SdkError::CurveError(e.to_string()))?;
 
+    // Check if there's sufficient liquidity in the destination vault
+    if swap_result.destination_amount_swapped > destination_vault_amount as u128 {
+        return Err(SdkError::InsufficientLiquidity {
+            required: swap_result.destination_amount_swapped as u64,
+            available: destination_vault_amount,
+        });
+    }
+
     Ok((
         swap_result.source_amount_swapped as u64,
         swap_result.destination_amount_swapped as u64,
@@ -213,6 +223,7 @@ pub fn calculate_constant_spread_quote(
 /// * `fees` - Pool fees configuration
 /// * `amount_in` - Amount to swap in
 /// * `source_vault_amount` - Current balance in source vault
+/// * `destination_vault_amount` - Current balance in destination vault (for liquidity check)
 /// * `trade_direction` - Direction of the trade
 /// * `curve_data` - Raw curve account data
 /// * `scope_price_feed_account` - Scope oracle account
@@ -223,6 +234,7 @@ pub fn calculate_inventory_skew_quote(
     fees: &Fees,
     amount_in: u64,
     source_vault_amount: u64,
+    destination_vault_amount: u64,
     trade_direction: hyperplane::curve::calculator::TradeDirection,
     curve_data: &[u8],
     scope_price_feed_account: &Account,
@@ -273,6 +285,14 @@ pub fn calculate_inventory_skew_quote(
         &params,
     )
     .map_err(|e| SdkError::CurveError(e.to_string()))?;
+
+    // Check if there's sufficient liquidity in the destination vault
+    if swap_result.destination_amount_swapped > destination_vault_amount as u128 {
+        return Err(SdkError::InsufficientLiquidity {
+            required: swap_result.destination_amount_swapped as u64,
+            available: destination_vault_amount,
+        });
+    }
 
     Ok((
         swap_result.source_amount_swapped as u64,

@@ -103,6 +103,7 @@ impl<'a, T: AsyncClient> QuoteCalculator<'a, T> {
                 self.calculate_constant_spread_quote(
                     &pool.fees,
                     amount_in,
+                    dest_vault_token.amount,
                     trade_direction,
                     &curve_account.data,
                 )
@@ -116,6 +117,7 @@ impl<'a, T: AsyncClient> QuoteCalculator<'a, T> {
                     &pool.fees,
                     amount_in,
                     source_vault_token.amount,
+                    dest_vault_token.amount,
                     trade_direction,
                     &curve_account.data,
                 )
@@ -198,6 +200,7 @@ impl<'a, T: AsyncClient> QuoteCalculator<'a, T> {
         &self,
         fees: &Fees,
         amount_in: u64,
+        destination_vault_amount: u64,
         trade_direction: TradeDirection,
         curve_data: &[u8],
     ) -> Result<Quote> {
@@ -236,6 +239,15 @@ impl<'a, T: AsyncClient> QuoteCalculator<'a, T> {
                 trade_direction,
             )?;
 
+        // Check if there's sufficient liquidity in the destination vault
+        if destination_amount_swapped > destination_vault_amount as u128 {
+            return Err(anyhow!(
+                "Insufficient liquidity. Required: {}, Available: {}",
+                destination_amount_swapped,
+                destination_vault_amount
+            ));
+        }
+
         Ok(Quote {
             in_amount: source_amount_swapped as u64,
             out_amount: destination_amount_swapped as u64,
@@ -249,6 +261,7 @@ impl<'a, T: AsyncClient> QuoteCalculator<'a, T> {
         fees: &Fees,
         amount_in: u64,
         source_vault_amount: u64,
+        destination_vault_amount: u64,
         trade_direction: TradeDirection,
         curve_data: &[u8],
     ) -> Result<Quote> {
@@ -287,6 +300,15 @@ impl<'a, T: AsyncClient> QuoteCalculator<'a, T> {
                 source_vault_amount as u128,
                 &curve,
             )?;
+
+        // Check if there's sufficient liquidity in the destination vault
+        if destination_amount_swapped > destination_vault_amount as u128 {
+            return Err(anyhow!(
+                "Insufficient liquidity. Required: {}, Available: {}",
+                destination_amount_swapped,
+                destination_vault_amount
+            ));
+        }
 
         Ok(Quote {
             in_amount: source_amount_swapped as u64,

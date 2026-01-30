@@ -63,6 +63,10 @@ pub enum SdkError {
     #[error("Curve calculation error: {0}")]
     CurveError(String),
 
+    /// Insufficient liquidity in the destination vault
+    #[error("Insufficient liquidity. Required: {required}, Available: {available}")]
+    InsufficientLiquidity { required: u64, available: u64 },
+
     /// Anchor error wrapper (used for curve calculations and deserialization)
     #[error("Anchor error: {0}")]
     AnchorError(#[from] anchor_lang::error::Error),
