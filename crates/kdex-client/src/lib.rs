@@ -9,6 +9,7 @@
 //! - Optional fetch utilities for RPC clients
 
 // Re-export generated code
+#[allow(unused_imports, clippy::io_other_error)]
 mod _generated;
 
 pub use _generated::*;
