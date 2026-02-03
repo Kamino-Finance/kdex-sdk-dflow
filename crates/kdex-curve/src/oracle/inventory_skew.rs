@@ -32,11 +32,11 @@ pub struct InventorySkewParams {
     pub size_spread_bps: u64,
     /// Inventory skew spread in basis points
     pub skew_bps: u64,
-    /// Inventory equilibrium target (in lamports)
+    /// Inventory equilibrium target as a ratio (scaled by 10000, e.g., 5000 = 0.5 = 50%)
     pub inv_equilibrium: u64,
-    /// Maximum inventory deviation for full skew (in lamports)
+    /// Maximum inventory deviation for full skew as a ratio (scaled by 10000, e.g., 10000 = 1.0 = 100%)
     pub inv_max: u64,
-    /// Reference trade size for size impact (in lamports)
+    /// Reference trade size for size impact as ratio of pool value (scaled by 10000, e.g., 1000 = 0.1 = 10% of pool value)
     pub q_ref: u64,
     /// Alpha exponent for size impact (scaled by 10000, e.g., 20000 = 2.0)
     pub alpha: u64,
@@ -66,18 +66,26 @@ impl InventorySkewParams {
 }
 
 /// Calculate inventory ratio: y = (inventory - equilibrium) / inv_max
+/// All inputs are ratios scaled by 10000
 /// Returns value scaled by 10000, clamped to [-10000, 10000] (i.e., [-1.0, 1.0])
-fn calculate_inventory_ratio(current_inventory: u128, inv_equilibrium: u64, inv_max: u64) -> i128 {
+fn calculate_inventory_ratio(
+    current_inventory_ratio: u64,
+    inv_equilibrium: u64,
+    inv_max: u64,
+) -> i128 {
     if inv_max == 0 {
         return 0;
     }
 
     let inv_equilibrium = inv_equilibrium as i128;
     let inv_max = inv_max as i128;
-    let current_inventory = current_inventory as i128;
+    let current_inventory = current_inventory_ratio as i128;
 
-    // y = (inventory - equilibrium) / inv_max, scaled by 10000
+    // y = (inventory - equilibrium) / inv_max
+    // All values already scaled by 10000, so we need to maintain scaling
     let numerator = current_inventory.saturating_sub(inv_equilibrium);
+    // numerator is scaled by 10000, inv_max is scaled by 10000
+    // To get proper scaling: (numerator * 10000) / inv_max
     // Safe: inv_max != 0 checked above, using checked_div for clippy
     let y = numerator
         .saturating_mul(10000)
@@ -88,17 +96,21 @@ fn calculate_inventory_ratio(current_inventory: u128, inv_equilibrium: u64, inv_
     y.clamp(-10000, 10000)
 }
 
-/// Calculate size impact factor: f = (swap_size / q_ref)^alpha
+/// Calculate size impact factor: f = (swap_size_ratio / q_ref)^alpha
+/// where swap_size_ratio = value of source amount / value of pool
+/// All inputs are ratios scaled by 10000
 /// Returns value scaled by 10000
-fn calculate_size_impact_factor(swap_size: u128, q_ref: u64, alpha: u64) -> Result<u128> {
+fn calculate_size_impact_factor(swap_size_ratio: u64, q_ref: u64, alpha: u64) -> Result<u128> {
     if q_ref == 0 {
         return Ok(0);
     }
 
+    let swap_size_ratio = swap_size_ratio as u128;
     let q_ref = q_ref as u128;
 
-    // ratio = swap_size / q_ref, scaled by 10000
-    let ratio = checked_div(checked_mul(swap_size, 10000)?, q_ref)?;
+    // ratio = swap_size_ratio / q_ref
+    // Both already scaled by 10000, so we need to maintain scaling
+    let ratio = checked_div(checked_mul(swap_size_ratio, 10000)?, q_ref)?;
 
     // Apply power function
     power_fixed_point(ratio, alpha as u128, ALPHA_SCALE)
@@ -224,6 +236,97 @@ fn calculate_dynamic_spreads(
     Ok((bid_spread_bps, ask_spread_bps))
 }
 
+/// Calculate inventory and swap size ratios for inventory skew pricing
+///
+/// This helper function converts absolute token amounts and price into normalized ratios
+/// needed for the inventory skew pricing model. It normalizes everything to the destination
+/// token to handle price variations correctly.
+///
+/// # Arguments
+/// * `source_amount` - Amount of source tokens being swapped
+/// * `price_value` - Oracle price value (A/B price)
+/// * `price_exp` - Oracle price exponent
+/// * `trade_direction` - Direction of the trade (AtoB or BtoA)
+/// * `source_vault_amount` - Current balance in source vault
+/// * `destination_vault_amount` - Current balance in destination vault
+///
+/// # Returns
+/// A tuple of (current_inventory_ratio, swap_size_ratio), both scaled by 10000
+///
+/// # Example
+/// ```
+/// use kdex_curve::oracle::inventory_skew::calculate_ratios;
+/// use kdex_curve::TradeDirection;
+///
+/// let (inv_ratio, swap_ratio) = calculate_ratios(
+///     100_000000,      // 100 tokens
+///     100_00000000,    // $100 price
+///     8,               // price exponent
+///     TradeDirection::AtoB,
+///     1_000_000000,    // 1000 tokens in source
+///     2_000_000000,    // 2000 tokens in destination
+/// ).unwrap();
+/// ```
+pub fn calculate_ratios(
+    source_amount: u128,
+    price_value: u64,
+    price_exp: u64,
+    trade_direction: TradeDirection,
+    source_vault_amount: u128,
+    destination_vault_amount: u128,
+) -> Result<(u64, u64)> {
+    let scale = 10u128.pow(price_exp as u32);
+
+    // Map vault amounts to token A and B based on trade direction
+    let (pool_token_a_amount, pool_token_b_amount) = match trade_direction {
+        TradeDirection::AtoB => (source_vault_amount, destination_vault_amount),
+        TradeDirection::BtoA => (destination_vault_amount, source_vault_amount),
+    };
+
+    // Calculate ratios normalized to the destination token
+    // For AtoB: normalize to token B, for BtoA: normalize to token A
+    let (current_inventory_ratio, swap_size_ratio) = match trade_direction {
+        TradeDirection::AtoB => {
+            // Normalize to token B
+            let value_of_a_in_b = checked_div(
+                checked_mul(pool_token_a_amount, scale)?,
+                price_value as u128,
+            )?;
+            let total_pool_in_b = checked_add(value_of_a_in_b, pool_token_b_amount)?;
+
+            let current_inventory_ratio =
+                checked_div(checked_mul(value_of_a_in_b, 10000)?, total_pool_in_b)? as u64;
+
+            let swap_value_in_b =
+                checked_div(checked_mul(source_amount, scale)?, price_value as u128)?;
+            let swap_size_ratio =
+                checked_div(checked_mul(swap_value_in_b, 10000)?, total_pool_in_b)? as u64;
+
+            (current_inventory_ratio, swap_size_ratio)
+        }
+        TradeDirection::BtoA => {
+            // Normalize to token A
+            let value_of_b_in_a = checked_div(
+                checked_mul(pool_token_b_amount, price_value as u128)?,
+                scale,
+            )?;
+            let total_pool_in_a = checked_add(pool_token_a_amount, value_of_b_in_a)?;
+
+            let current_inventory_ratio =
+                checked_div(checked_mul(pool_token_a_amount, 10000)?, total_pool_in_a)? as u64;
+
+            let swap_value_in_a =
+                checked_div(checked_mul(source_amount, price_value as u128)?, scale)?;
+            let swap_size_ratio =
+                checked_div(checked_mul(swap_value_in_a, 10000)?, total_pool_in_a)? as u64;
+
+            (current_inventory_ratio, swap_size_ratio)
+        }
+    };
+
+    Ok((current_inventory_ratio, swap_size_ratio))
+}
+
 /// Calculate inventory-aware swap amounts given an oracle price
 ///
 /// # Arguments
@@ -231,7 +334,8 @@ fn calculate_dynamic_spreads(
 /// * `price_value` - Oracle price value
 /// * `price_exp` - Oracle price exponent
 /// * `trade_direction` - Direction of the trade (AtoB or BtoA)
-/// * `pool_source_amount` - Current pool balance of source token (for inventory calculation)
+/// * `current_inventory_ratio` - Current inventory as a ratio (scaled by 10000, e.g., 5000 = 0.5 = 50%)
+/// * `swap_size_ratio` - Ratio of swap value to pool value (scaled by 10000, e.g., 1000 = 0.1 = 10% of pool value)
 /// * `params` - Inventory skew parameters
 ///
 /// # Returns
@@ -241,7 +345,8 @@ pub fn swap(
     price_value: u64,
     price_exp: u64,
     trade_direction: TradeDirection,
-    pool_source_amount: u128,
+    current_inventory_ratio: u64,
+    swap_size_ratio: u64,
     params: &InventorySkewParams,
 ) -> Result<SwapResult> {
     if source_amount == 0 {
@@ -251,10 +356,14 @@ pub fn swap(
     let price_value = price_value as u128;
 
     // Calculate inventory ratio
-    let y = calculate_inventory_ratio(pool_source_amount, params.inv_equilibrium, params.inv_max);
+    let y = calculate_inventory_ratio(
+        current_inventory_ratio,
+        params.inv_equilibrium,
+        params.inv_max,
+    );
 
     // Calculate size impact factor
-    let f = calculate_size_impact_factor(source_amount, params.q_ref, params.alpha)?;
+    let f = calculate_size_impact_factor(swap_size_ratio, params.q_ref, params.alpha)?;
 
     // Calculate dynamic spreads
     let (bid_spread_bps, ask_spread_bps) = calculate_dynamic_spreads(
@@ -314,46 +423,47 @@ mod tests {
 
     fn make_params() -> InventorySkewParams {
         InventorySkewParams::new(
-            10,            // base_spread_bps = 0.1%
-            40,            // size_spread_bps = 0.4%
-            100,           // skew_bps = 1%
-            1_000_000_000, // inv_equilibrium (1B units)
-            500_000_000,   // inv_max (500M units)
-            100_000_000,   // q_ref (100M units - matches 100 token swap with 6 decimals)
-            20000,         // alpha = 2.0
+            10,    // base_spread_bps = 0.1%
+            40,    // size_spread_bps = 0.4%
+            100,   // skew_bps = 1%
+            5000,  // inv_equilibrium = 0.5 (50% of pool)
+            5000,  // inv_max = 0.5 (50% deviation range)
+            1000,  // q_ref = 0.1 (10% of pool as reference trade size)
+            20000, // alpha = 2.0
         )
     }
 
     #[test]
     fn test_inventory_ratio_balanced() {
-        let y = calculate_inventory_ratio(1000, 1000, 500);
+        // current = equilibrium → y = 0
+        let y = calculate_inventory_ratio(5000, 5000, 5000);
         assert_eq!(y, 0);
     }
 
     #[test]
     fn test_inventory_ratio_excess() {
-        // 500 over equilibrium, max deviation 500 → y = 1.0
-        let y = calculate_inventory_ratio(1500, 1000, 500);
+        // current = 10000 (100%), equilibrium = 5000 (50%), max = 5000 (50%) → y = 1.0
+        let y = calculate_inventory_ratio(10000, 5000, 5000);
         assert_eq!(y, 10000);
     }
 
     #[test]
     fn test_inventory_ratio_deficit() {
-        // 500 under equilibrium → y = -1.0
-        let y = calculate_inventory_ratio(500, 1000, 500);
+        // current = 0 (0%), equilibrium = 5000 (50%), max = 5000 (50%) → y = -1.0
+        let y = calculate_inventory_ratio(0, 5000, 5000);
         assert_eq!(y, -10000);
     }
 
     #[test]
     fn test_size_impact_factor_equal() {
-        // Size equals q_ref → f = 1.0
+        // swap_size_ratio = q_ref → f = 1.0
         let f = calculate_size_impact_factor(1000, 1000, 10000).unwrap();
         assert_eq!(f, 10000);
     }
 
     #[test]
     fn test_size_impact_factor_half() {
-        // Size is half of q_ref → f = 0.5
+        // swap_size_ratio is half of q_ref → f = 0.5
         let f = calculate_size_impact_factor(500, 1000, 10000).unwrap();
         assert_eq!(f, 5000);
     }
@@ -393,7 +503,8 @@ mod tests {
             100_00000000, // $100 price
             8,
             TradeDirection::AtoB,
-            1_000_000_000, // at equilibrium
+            5000, // current_inventory_ratio = 0.5 (at equilibrium)
+            1000, // swap_size_ratio = 0.1 (same as q_ref)
             &params,
         )
         .unwrap();
@@ -416,7 +527,8 @@ mod tests {
             100_00000000,
             8,
             TradeDirection::AtoB,
-            1_500_000_000, // excess inventory (above equilibrium)
+            10000, // current_inventory_ratio = 1.0 (100%, excess inventory)
+            1000,  // swap_size_ratio = 0.1
             &params,
         )
         .unwrap();
@@ -428,7 +540,16 @@ mod tests {
     #[test]
     fn test_swap_zero_amount() {
         let params = make_params();
-        assert!(swap(0, 100_00000000, 8, TradeDirection::AtoB, 1000, &params).is_err());
+        assert!(swap(
+            0,
+            100_00000000,
+            8,
+            TradeDirection::AtoB,
+            5000,
+            1000,
+            &params
+        )
+        .is_err());
     }
 
     #[test]

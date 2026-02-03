@@ -275,13 +275,26 @@ pub fn calculate_inventory_skew_quote(
         curve.alpha,
     );
 
+    // Calculate ratios using the common helper from kdex-curve
+    let (current_inventory_ratio, swap_size_ratio) =
+        kdex_curve::oracle::inventory_skew::calculate_ratios(
+            source_amount_less_fees,
+            price_value as u64,
+            price_exp as u64,
+            trade_direction,
+            source_vault_amount as u128,
+            destination_vault_amount as u128,
+        )
+        .map_err(|e| SdkError::CurveError(e.to_string()))?;
+
     // Calculate swap using InventorySkew logic from kdex-curve
     let swap_result = kdex_curve::oracle::inventory_skew_swap(
         source_amount_less_fees,
         price_value as u64,
         price_exp as u64,
         trade_direction,
-        source_vault_amount as u128,
+        current_inventory_ratio,
+        swap_size_ratio,
         &params,
     )
     .map_err(|e| SdkError::CurveError(e.to_string()))?;

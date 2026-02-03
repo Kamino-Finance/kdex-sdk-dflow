@@ -291,13 +291,24 @@ impl<'a, T: AsyncClient> QuoteCalculator<'a, T> {
             })?;
 
         // Calculate swap using InventorySkew logic
+        let (pool_token_a_amount, pool_token_b_amount) = match trade_direction {
+            TradeDirection::AtoB => (
+                source_vault_amount as u128,
+                destination_vault_amount as u128,
+            ),
+            TradeDirection::BtoA => (
+                destination_vault_amount as u128,
+                source_vault_amount as u128,
+            ),
+        };
         let (source_amount_swapped, destination_amount_swapped) =
             hyperplane::curve::oracle::calculate_inventory_swap_amounts(
                 source_amount_less_fees,
                 price_value as u64,
                 price_exp as u64,
                 trade_direction,
-                source_vault_amount as u128,
+                pool_token_a_amount,
+                pool_token_b_amount,
                 &curve,
             )?;
 

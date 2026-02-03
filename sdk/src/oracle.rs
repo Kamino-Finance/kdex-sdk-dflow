@@ -213,6 +213,7 @@ pub fn calculate_constant_spread_quote(
 /// * `fees` - Pool fees configuration
 /// * `amount_in` - Amount to swap in
 /// * `source_vault_amount` - Current balance in source vault
+/// * `destination_vault_amount` - Current balance in destination vault
 /// * `trade_direction` - Direction of the trade
 /// * `curve_data` - Raw curve account data
 /// * `scope_price_feed_account` - Scope oracle account
@@ -223,6 +224,7 @@ pub fn calculate_inventory_skew_quote(
     fees: &Fees,
     amount_in: u64,
     source_vault_amount: u64,
+    destination_vault_amount: u64,
     trade_direction: hyperplane::curve::calculator::TradeDirection,
     curve_data: &[u8],
     scope_price_feed_account: &Account,
@@ -263,13 +265,26 @@ pub fn calculate_inventory_skew_quote(
         curve.alpha,
     );
 
+    // Calculate ratios using the common helper from kdex-curve
+    let (current_inventory_ratio, swap_size_ratio) =
+        kdex_curve::oracle::inventory_skew::calculate_ratios(
+            source_amount_less_fees,
+            price_value as u64,
+            price_exp as u64,
+            trade_direction,
+            source_vault_amount as u128,
+            destination_vault_amount as u128,
+        )
+        .map_err(|e| SdkError::CurveError(e.to_string()))?;
+
     // Calculate swap using InventorySkew logic from kdex-curve
     let swap_result = kdex_curve::oracle::inventory_skew_swap(
         source_amount_less_fees,
         price_value as u64,
         price_exp as u64,
         trade_direction,
-        source_vault_amount as u128,
+        current_inventory_ratio,
+        swap_size_ratio,
         &params,
     )
     .map_err(|e| SdkError::CurveError(e.to_string()))?;
