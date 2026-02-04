@@ -175,6 +175,10 @@ fn power_integer(base: u128, exp: u32) -> Result<u128> {
 
 /// Calculate dynamic bid and ask spreads
 ///
+/// Bid/ask are defined from the perspective of token A (base asset) quoted in token B (currency).
+/// - BID = price MM pays when buying token A (user sells A via AtoB)
+/// - ASK = price MM charges when selling token A (user buys A via BtoA)
+///
 /// Formula:
 /// - base_half_spread = base_spread_bps/2 + size_spread_bps * f / 2
 /// - extra_bid_bps = skew_bps * max(0, y)
@@ -200,6 +204,9 @@ fn calculate_dynamic_spreads(
     let base_half_spread = base_half.saturating_add(size_component);
 
     // Inventory skew adjustments
+    // Token B (quote currency) perspective: bid/ask refer to the base asset (token A)
+    // When y > 0 (excess token A), widen bid to discourage users selling more A (AtoB)
+    // When y < 0 (deficit token A), widen ask to discourage users buying more A (BtoA)
     let extra_bid_bps = if y > 0 {
         let skew = skew_bps as i128;
         // Safe: skew and y are bounded, result fits in u64
@@ -244,7 +251,9 @@ fn calculate_dynamic_spreads(
 ///
 /// # Arguments
 /// * `source_amount` - Amount of source tokens being swapped
-/// * `price_value` - Oracle price value (A/B price)
+/// * `price_value` - Oracle price value representing the ratio of raw A units to raw B units
+///   (scaled by 10^price_exp). Note: This represents A-units-per-B-unit,
+///   which may be inverted from typical market convention due to decimal normalization.
 /// * `price_exp` - Oracle price exponent
 /// * `trade_direction` - Direction of the trade (AtoB or BtoA)
 /// * `source_vault_amount` - Current balance in source vault
@@ -331,7 +340,7 @@ pub fn calculate_ratios(
 ///
 /// # Arguments
 /// * `source_amount` - Amount of source tokens to swap
-/// * `price_value` - Oracle price value
+/// * `price_value` - Oracle price value (ratio of raw A units to raw B units, scaled by 10^price_exp)
 /// * `price_exp` - Oracle price exponent
 /// * `trade_direction` - Direction of the trade (AtoB or BtoA)
 /// * `current_inventory_ratio` - Current inventory as a ratio (scaled by 10000, e.g., 5000 = 0.5 = 50%)
@@ -375,12 +384,12 @@ pub fn swap(
     )?;
 
     let (source_amount_swapped, destination_amount_swapped) = match trade_direction {
-        // User buying B with A - pays ask price
+        // User selling A for B - receives bid price (MM buys A)
         TradeDirection::AtoB => {
             let effective_price = checked_div(
                 checked_mul(
                     price_value,
-                    checked_add(BPS_DENOMINATOR, ask_spread_bps as u128)?,
+                    checked_add(BPS_DENOMINATOR, bid_spread_bps as u128)?,
                 )?,
                 BPS_DENOMINATOR,
             )?;
@@ -390,12 +399,12 @@ pub fn swap(
 
             (source_amount, destination)
         }
-        // User selling B for A - receives bid price
+        // User buying A with B - pays ask price (MM sells A)
         TradeDirection::BtoA => {
             let effective_price = checked_div(
                 checked_mul(
                     price_value,
-                    checked_sub(BPS_DENOMINATOR, bid_spread_bps as u128)?,
+                    checked_sub(BPS_DENOMINATOR, ask_spread_bps as u128)?,
                 )?,
                 BPS_DENOMINATOR,
             )?;
@@ -491,6 +500,7 @@ mod tests {
     fn test_dynamic_spreads_deficit_inventory() {
         // y = -0.5 (deficit inventory) → widen ask
         let (bid, ask) = calculate_dynamic_spreads(10, 40, 100, -5000, 10000).unwrap();
+        // extra_ask = 100 * 0.5 = 50
         assert_eq!(bid, 25);
         assert_eq!(ask, 75);
     }
@@ -520,8 +530,8 @@ mod tests {
     fn test_swap_excess_inventory_a_to_b() {
         let params = make_params();
 
-        // When inventory is above equilibrium and buying B (selling A),
-        // the ask spread is normal
+        // When inventory is above equilibrium and user sells A (AtoB),
+        // the bid spread is widened to discourage adding more A
         let result = swap(
             100_000000,
             100_00000000,
@@ -533,7 +543,7 @@ mod tests {
         )
         .unwrap();
 
-        // Should still work, bid spread is widened but we're using ask
+        // Should still work, bid spread is widened to discourage this trade
         assert!(result.destination_amount_swapped > 0);
     }
 
