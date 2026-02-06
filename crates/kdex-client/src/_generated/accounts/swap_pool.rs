@@ -195,7 +195,7 @@ impl anchor_lang::AccountSerialize for SwapPool {}
 #[cfg(feature = "anchor")]
 impl anchor_lang::Owner for SwapPool {
     fn owner() -> Pubkey {
-        crate::HYPERPLANE_ID
+        crate::KDEX_ID
     }
 }
 

@@ -1,13 +1,13 @@
-//! AMM implementation for Hyperplane using the DFlow AMM interface
+//! AMM implementation for KDEX using the DFlow AMM interface
 //!
 //! This module provides a DFlow-compatible AMM implementation for interacting with
-//! Hyperplane pools, supporting all curve types including oracle-based curves.
+//! KDEX pools, supporting all curve types including oracle-based curves.
 
 use anchor_lang::AccountDeserialize;
 use anyhow::Result;
-use hyperplane::curve::base::{CurveType, SwapCurve};
-use hyperplane::curve::calculator::TradeDirection;
-use hyperplane::state::{SwapPool, SwapState};
+use kdex_client::generated::accounts::SwapPool;
+use kdex_client::state::SwapState;
+use kdex_client::{CurveType, TradeDirection, KDEX_ID};
 use solana_sdk::{instruction::AccountMeta, pubkey::Pubkey};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
@@ -22,7 +22,7 @@ pub use dflow_amm_interface::{
     SwapMode, SwapParams,
 };
 
-/// Hyperplane AMM implementation compatible with DFlow
+/// KDEX AMM implementation compatible with DFlow
 ///
 /// # DFlow Compatibility
 ///
@@ -57,7 +57,7 @@ pub use dflow_amm_interface::{
 /// let quote = amm.quote(&params)?;
 /// ```
 #[derive(Clone, Debug)]
-pub struct HyperplaneAmm {
+pub struct KDEXAmm {
     /// The pool's public key
     pool_key: Pubkey,
     /// The swap pool account data
@@ -66,8 +66,6 @@ pub struct HyperplaneAmm {
     token_a_vault: Option<TokenAccount>,
     /// Token B vault account (updated via update())
     token_b_vault: Option<TokenAccount>,
-    /// Swap curve (updated via update())
-    curve: Option<SwapCurve>,
     /// Label for this AMM
     label: String,
     /// Program ID
@@ -85,20 +83,19 @@ pub struct HyperplaneAmm {
     scope_price_feeds: HashMap<Pubkey, solana_sdk::account::Account>,
 }
 
-impl HyperplaneAmm {
-    /// Creates a new HyperplaneAmm from a keyed account
+impl KDEXAmm {
+    /// Creates a new KDEXAmm from a keyed account
     pub fn new_from_keyed_account(keyed_account: &KeyedAccount) -> Result<Self> {
         let pool: SwapPool =
             AccountDeserialize::try_deserialize(&mut keyed_account.account.data.as_ref())?;
 
         Ok(Self {
             pool_key: keyed_account.key,
-            label: "Hyperplane".into(),
-            program_id: hyperplane::id(),
+            label: "KDEX".into(),
+            program_id: KDEX_ID,
             pool,
             token_a_vault: None,
             token_b_vault: None,
-            curve: None,
             token_a_program: None,
             token_b_program: None,
             account_hashes: HashMap::new(),
@@ -107,7 +104,7 @@ impl HyperplaneAmm {
         })
     }
 
-    /// Creates a new HyperplaneAmm with a custom program ID (for testing or devnet)
+    /// Creates a new KDEXAmm with a custom program ID (for testing or devnet)
     pub fn new_from_keyed_account_with_program_id(
         keyed_account: &KeyedAccount,
         program_id: Pubkey,
@@ -126,12 +123,11 @@ impl HyperplaneAmm {
 
         Ok(Self {
             pool_key: keyed_account.key,
-            label: "Hyperplane".into(),
+            label: "KDEX".into(),
             program_id,
             pool,
             token_a_vault: None,
             token_b_vault: None,
-            curve: None,
             token_a_program: None,
             token_b_program: None,
             account_hashes: HashMap::new(),
@@ -161,7 +157,7 @@ impl HyperplaneAmm {
 
     /// Returns whether the pool is in withdrawals-only mode
     pub fn is_withdrawals_only(&self) -> bool {
-        self.pool.withdrawals_only()
+        self.pool.withdrawals_only != 0
     }
 
     /// Gets the Scope price feed pubkey for oracle-based curves
@@ -254,17 +250,15 @@ impl HyperplaneAmm {
                 )?
             }
             CurveType::InventorySkewOracle => {
-                // Deserialize curve to get scope_price_feed
-                let mut data = &curve_account.data[..];
-                let curve: hyperplane::state::InventorySkewOracleCurve =
-                    anchor_lang::AccountDeserialize::try_deserialize(&mut data)?;
+                // Extract scope_price_feed from curve data
+                let scope_price_feed = solana_sdk::pubkey::Pubkey::try_from(
+                    &curve_account.data[8..40],
+                )
+                .map_err(|_| anyhow::anyhow!("Failed to parse scope_price_feed from curve data"))?;
 
                 // Get Scope price feed account
-                let scope_account = accounts_map.get(&curve.scope_price_feed).ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "Scope price feed account not found: {}",
-                        curve.scope_price_feed
-                    )
+                let scope_account = accounts_map.get(&scope_price_feed).ok_or_else(|| {
+                    anyhow::anyhow!("Scope price feed account not found: {}", scope_price_feed)
                 })?;
 
                 oracle::calculate_inventory_skew_quote(
@@ -345,76 +339,15 @@ impl HyperplaneAmm {
             if cached_hash != Some(&new_hash) {
                 has_changes = true;
                 self.account_hashes.insert(self.pool.swap_curve, new_hash);
-                self.curve = Some(self.deserialize_curve(curve_account)?);
+                self.curve_account_data = Some(curve_account.data.clone());
             }
         }
 
         Ok(has_changes)
     }
-
-    /// Helper to deserialize curve based on curve type
-    fn deserialize_curve(&self, curve_account: &solana_sdk::account::Account) -> Result<SwapCurve> {
-        let curve = match self.pool.curve_type() {
-            CurveType::ConstantProduct => {
-                let mut data = &curve_account.data[..];
-                let calculator: hyperplane::state::ConstantProductCurve =
-                    AccountDeserialize::try_deserialize(&mut data)?;
-                SwapCurve {
-                    calculator: std::sync::Arc::new(calculator),
-                    curve_type: self.pool.curve_type(),
-                }
-            }
-            CurveType::ConstantPrice => {
-                let mut data = &curve_account.data[..];
-                let calculator: hyperplane::state::ConstantPriceCurve =
-                    AccountDeserialize::try_deserialize(&mut data)?;
-                SwapCurve {
-                    calculator: std::sync::Arc::new(calculator),
-                    curve_type: self.pool.curve_type(),
-                }
-            }
-            CurveType::Offset => {
-                let mut data = &curve_account.data[..];
-                let calculator: hyperplane::state::OffsetCurve =
-                    AccountDeserialize::try_deserialize(&mut data)?;
-                SwapCurve {
-                    calculator: std::sync::Arc::new(calculator),
-                    curve_type: self.pool.curve_type(),
-                }
-            }
-            CurveType::Stable => {
-                let mut data = &curve_account.data[..];
-                let calculator: hyperplane::state::StableCurve =
-                    AccountDeserialize::try_deserialize(&mut data)?;
-                SwapCurve {
-                    calculator: std::sync::Arc::new(calculator),
-                    curve_type: self.pool.curve_type(),
-                }
-            }
-            CurveType::ConstantSpreadOracle => {
-                let mut data = &curve_account.data[..];
-                let calculator: hyperplane::state::ConstantSpreadOracleCurve =
-                    AccountDeserialize::try_deserialize(&mut data)?;
-                SwapCurve {
-                    calculator: std::sync::Arc::new(calculator),
-                    curve_type: self.pool.curve_type(),
-                }
-            }
-            CurveType::InventorySkewOracle => {
-                let mut data = &curve_account.data[..];
-                let calculator: hyperplane::state::InventorySkewOracleCurve =
-                    AccountDeserialize::try_deserialize(&mut data)?;
-                SwapCurve {
-                    calculator: std::sync::Arc::new(calculator),
-                    curve_type: self.pool.curve_type(),
-                }
-            }
-        };
-        Ok(curve)
-    }
 }
 
-impl Amm for HyperplaneAmm {
+impl Amm for KDEXAmm {
     fn label(&self) -> String {
         self.label.clone()
     }
@@ -457,7 +390,7 @@ impl Amm for HyperplaneAmm {
     }
 
     fn from_keyed_account(keyed_account: &KeyedAccount, _amm_context: &AmmContext) -> Result<Self> {
-        HyperplaneAmm::new_from_keyed_account(keyed_account)
+        KDEXAmm::new_from_keyed_account(keyed_account)
     }
 
     fn update(&mut self, accounts_map: &AccountMap) -> Result<()> {
@@ -482,10 +415,9 @@ impl Amm for HyperplaneAmm {
             None
         };
 
-        // Update curve - manually deserialize based on curve type
+        // Update curve data
         if let Some(curve_account) = accounts_map.get(&self.pool.swap_curve) {
-            self.curve = Some(self.deserialize_curve(curve_account)?);
-            // Cache curve account data for oracle quotes
+            // Cache curve account data for quotes
             self.curve_account_data = Some(curve_account.data.clone());
 
             // For oracle curves, cache the Scope price feed account if available
@@ -582,7 +514,7 @@ impl Amm for HyperplaneAmm {
             _ => {}
         }
 
-        // Standard quote for non-oracle curves
+        // Standard quote for non-oracle curves using kdex_client::quote
         let actual_amount_in = quote_params.amount;
 
         let (token_a_amount, token_b_amount) = match (&self.token_a_vault, &self.token_b_vault) {
@@ -606,27 +538,28 @@ impl Amm for HyperplaneAmm {
                 );
             };
 
-        // Get the curve
-        let curve = self
-            .curve
+        // Get the curve data
+        let curve_data = self
+            .curve_account_data
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Curve not updated. Call update() first."))?;
 
-        // Calculate swap
-        let result = curve
-            .swap(
-                u128::from(actual_amount_in),
-                u128::from(source_amount),
-                u128::from(destination_amount),
-                trade_direction,
-                self.pool.fees(),
-            )
-            .map_err(|e| anyhow::anyhow!("Swap calculation failed: {:?}", e))?;
+        // Calculate swap using kdex_client::quote
+        let result = kdex_client::quote::calculate_quote(
+            self.pool.curve_type(),
+            &self.pool.fees,
+            actual_amount_in,
+            source_amount,
+            destination_amount,
+            trade_direction,
+            curve_data,
+        )
+        .map_err(|e| anyhow::anyhow!("Swap calculation failed: {}", e))?;
 
         // DFlow Quote only contains in_amount and out_amount
         Ok(Quote {
             in_amount: actual_amount_in,
-            out_amount: result.destination_amount_swapped as u64,
+            out_amount: result.destination_amount_swapped,
         })
     }
 
@@ -682,7 +615,7 @@ impl Amm for HyperplaneAmm {
             _ => self.program_id, // Use program_id as placeholder for non-oracle curves
         };
 
-        // Build account metas according to Hyperplane's Swap instruction
+        // Build account metas according to KDEX's Swap instruction
         let account_metas = vec![
             AccountMeta::new_readonly(*token_transfer_authority, true),
             AccountMeta::new(self.pool_key, false),

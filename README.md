@@ -1,10 +1,10 @@
 # kdex-sdk
 
-Rust SDK for integrating with the Hyperplane AMM on Solana.
+Rust SDK for integrating with the KDEX AMM on Solana.
 
 ## Overview
 
-This SDK provides the core libraries and integration adapters for building applications that interact with the Hyperplane AMM. It is extracted from the main [Hyperplane repository](https://github.com/Kamino-Finance/hyperplane) for standalone use.
+This SDK provides the core libraries and integration adapters for building applications that interact with the KDEX AMM. It is extracted from the main [KDEX repository](https://github.com/Kamino-Finance/kdex-private) for standalone use.
 
 ## Project Structure
 
@@ -22,7 +22,7 @@ kdex-sdk/
 
 ### kdex-curve
 
-Low-level curve mathematics library implementing Hyperplane's pricing algorithms. Includes:
+Low-level curve mathematics library implementing KDEX's pricing algorithms. Includes:
 
 - Constant Product (x*y=k)
 - Constant Price (fixed rate)
@@ -32,7 +32,7 @@ Low-level curve mathematics library implementing Hyperplane's pricing algorithms
 
 ### kdex-client
 
-Generated client bindings for interacting with the Hyperplane on-chain program.
+Generated client bindings for interacting with the KDEX on-chain program.
 
 ### sdk
 

@@ -113,7 +113,7 @@ impl Swap {
             ));
         } else {
             accounts.push(solana_instruction::AccountMeta::new_readonly(
-                crate::HYPERPLANE_ID,
+                crate::KDEX_ID,
                 false,
             ));
         }
@@ -124,7 +124,7 @@ impl Swap {
             ));
         } else {
             accounts.push(solana_instruction::AccountMeta::new_readonly(
-                crate::HYPERPLANE_ID,
+                crate::KDEX_ID,
                 false,
             ));
         }
@@ -142,7 +142,7 @@ impl Swap {
         data.append(&mut args);
 
         solana_instruction::Instruction {
-            program_id: crate::HYPERPLANE_ID,
+            program_id: crate::KDEX_ID,
             accounts,
             data,
         }
@@ -599,7 +599,7 @@ impl<'a, 'b> SwapCpi<'a, 'b> {
             ));
         } else {
             accounts.push(solana_instruction::AccountMeta::new_readonly(
-                crate::HYPERPLANE_ID,
+                crate::KDEX_ID,
                 false,
             ));
         }
@@ -610,7 +610,7 @@ impl<'a, 'b> SwapCpi<'a, 'b> {
             ));
         } else {
             accounts.push(solana_instruction::AccountMeta::new_readonly(
-                crate::HYPERPLANE_ID,
+                crate::KDEX_ID,
                 false,
             ));
         }
@@ -634,7 +634,7 @@ impl<'a, 'b> SwapCpi<'a, 'b> {
         data.append(&mut args);
 
         let instruction = solana_instruction::Instruction {
-            program_id: crate::HYPERPLANE_ID,
+            program_id: crate::KDEX_ID,
             accounts,
             data,
         };

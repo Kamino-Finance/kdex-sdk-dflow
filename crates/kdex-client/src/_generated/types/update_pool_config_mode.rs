@@ -26,4 +26,5 @@ pub enum UpdatePoolConfigMode {
     WithdrawalsOnly,
     PriceChain,
     MaxAgeSecs,
+    PriceOffsetBps,
 }

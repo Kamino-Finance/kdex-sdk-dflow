@@ -9,7 +9,7 @@ use num_derive::FromPrimitive;
 use thiserror::Error;
 
 #[derive(Clone, Debug, Eq, Error, FromPrimitive, PartialEq)]
-pub enum HyperplaneError {
+pub enum KdexError {
     /// 6000 - Invalid program address generated from bump seed and key
     #[error("Invalid program address generated from bump seed and key")]
     InvalidProgramAddress = 0x1770,
@@ -90,8 +90,8 @@ pub enum HyperplaneError {
     OraclePriceTooOld = 0x1789,
 }
 
-impl From<HyperplaneError> for solana_program_error::ProgramError {
-    fn from(e: HyperplaneError) -> Self {
+impl From<KdexError> for solana_program_error::ProgramError {
+    fn from(e: KdexError) -> Self {
         solana_program_error::ProgramError::Custom(e as u32)
     }
 }

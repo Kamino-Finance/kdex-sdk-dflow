@@ -36,4 +36,8 @@ pub enum CurveError {
     /// Invalid oracle configuration
     #[error("Invalid oracle configuration")]
     InvalidOracleConfig,
+
+    /// Invalid fee configuration
+    #[error("Invalid fee configuration")]
+    InvalidFee,
 }

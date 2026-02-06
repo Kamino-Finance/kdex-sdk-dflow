@@ -187,7 +187,7 @@ mod tests {
 
     #[test]
     fn test_ceiling_div_with_adjustment() {
-        // Test case from hyperplane's constant_product_swap_rounding test
+        // Test case from kdex's constant_product_swap_rounding test
         // (20, 30_000 - 20, 10_000, 18, 6) - source can be 18 to get 6 dest
         // invariant = 29980 * 10000 = 299_800_000
         // new_pool_source = 29980 + 20 = 30_000

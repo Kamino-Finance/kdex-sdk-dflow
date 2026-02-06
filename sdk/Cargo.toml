@@ -1,14 +1,14 @@
 [package]
-name = "hyperplane-sdk"
+name = "kdex-sdk"
 version = "0.2.0"
 edition = "2021"
-description = "Rust SDK for Hyperplane AMM pools on Solana, supporting all curve types including oracle-based curves"
+description = "Rust SDK for KDEX AMM pools on Solana, supporting all curve types including oracle-based curves"
 license = "MIT"
 authors = ["Kamino Finance"]
-repository = "https://github.com/Kamino-Finance/hyperplane"
-homepage = "https://github.com/Kamino-Finance/hyperplane"
-documentation = "https://docs.rs/hyperplane-sdk"
-keywords = ["solana", "amm", "defi", "hyperplane", "swap"]
+repository = "https://github.com/Kamino-Finance/kdex-private"
+homepage = "https://github.com/Kamino-Finance/kdex-private"
+documentation = "https://docs.rs/kdex-sdk"
+keywords = ["solana", "amm", "defi", "kdex", "swap"]
 categories = ["cryptography::cryptocurrencies", "api-bindings"]
 readme = "README.md"
 
@@ -17,16 +17,12 @@ anchor-lang = "0.32.1"
 anchor-spl = "0.32.1"
 solana-sdk = "=2.3.1"
 solana-client = { version = "=2.3.13", optional = true }
-hyperplane = { git = "https://github.com/Kamino-Finance/hyperplane", branch = "feature/jupiter_sdk", features = ["no-entrypoint", "serde"] }
 kdex-curve = { path = "../crates/kdex-curve" }
-kdex-client = { path = "../crates/kdex-client", features = ["fetch", "anchor"] }
-orbit-link = { git = "ssh://git@github.com/Kamino-Finance/scope-private.git", branch = "solana_2.3.13_anchor_0.32.1" }
-scope-types = { git = "ssh://git@github.com/Kamino-Finance/scope-private.git", branch = "solana_2.3.13_anchor_0.32.1" }
+kdex-client = { path = "../crates/kdex-client", features = ["fetch", "anchor", "oracle"] }
 spl-token = { version = "8.0", features = ["no-entrypoint"] }
 spl-associated-token-account = "7.0.0"
 thiserror = "1.0"
 anyhow = "1.0"
-bytemuck = "1.24.0"
 serde = { version = "1.0", features = ["derive"], optional = true }
 serde_json = { version = "1.0", optional = true }
 tracing = { version = "0.1", optional = true }
@@ -34,7 +30,7 @@ tracing = { version = "0.1", optional = true }
 [features]
 default = ["rpc-client"]
 serde = ["dep:serde", "dep:serde_json"]
-rpc-client = ["dep:solana-client", "orbit-link/rpc-client"]
+rpc-client = ["dep:solana-client"]
 logging = ["dep:tracing"]
 
 [dev-dependencies]

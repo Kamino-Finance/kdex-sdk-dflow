@@ -1,4 +1,4 @@
-//! Example: Getting a quote from a Hyperplane pool using DFlow interface
+//! Example: Getting a quote from a KDEX pool using DFlow interface
 //!
 //! Run with: cargo run --example quote --features testing
 //!
@@ -6,8 +6,8 @@
 //! - POOL: Pool address (can also be passed as CLI arg)
 //! - RPC: RPC endpoint URL (default: http://127.0.0.1:8899)
 
-use hyperplane::curve::base::CurveType;
-use hyperplane_sdk_dflow::{AccountMap, Amm, HyperplaneAmm, KeyedAccount, QuoteParams, SwapMode};
+use kdex_client::CurveType;
+use kdex_sdk_dflow::{AccountMap, Amm, KDEXAmm, KeyedAccount, QuoteParams, SwapMode};
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::pubkey::Pubkey;
 use std::str::FromStr;
@@ -24,7 +24,7 @@ fn main() -> anyhow::Result<()> {
 
     let pool_address = Pubkey::from_str(&pool_str)?;
 
-    println!("Fetching quote for Hyperplane pool (DFlow SDK)...");
+    println!("Fetching quote for KDEX pool (DFlow SDK)...");
     println!("Pool: {}", pool_address);
 
     // Create RPC client
@@ -39,7 +39,7 @@ fn main() -> anyhow::Result<()> {
     );
 
     // Create AMM instance
-    let mut amm = HyperplaneAmm::new_from_keyed_account(&KeyedAccount {
+    let mut amm = KDEXAmm::new_from_keyed_account(&KeyedAccount {
         key: pool_address,
         account: pool_account,
         params: None,

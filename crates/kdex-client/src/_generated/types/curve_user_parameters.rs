@@ -30,11 +30,13 @@ pub enum CurveUserParameters {
         scope_price_feed: Pubkey,
         /// Price chain - array of Scope price indices (up to 4)
         /// Values of u16::MAX (65535) terminate the chain
-        /// Example: [387, 0, MAX, MAX] = bonkSOL/SOL * SOL/USD
         price_chain: [u16; 4],
         /// Max age in seconds for each price index in the chain
         max_age_secs: [u16; 4],
         bps_from_oracle: u64,
+        /// Price offset in basis points (can be negative, default 0)
+        /// Shifts the oracle price: adjusted = oracle * (10000 + offset) / 10000
+        price_offset_bps: i64,
     },
     InventorySkewOracle {
         #[cfg_attr(
@@ -54,5 +56,8 @@ pub enum CurveUserParameters {
         inv_max: u64,
         q_ref: u64,
         alpha: u64,
+        /// Price offset in basis points (can be negative, default 0)
+        /// Shifts the oracle price: adjusted = oracle * (10000 + offset) / 10000
+        price_offset_bps: i64,
     },
 }

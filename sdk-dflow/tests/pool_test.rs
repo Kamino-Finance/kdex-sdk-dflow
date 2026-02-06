@@ -1,16 +1,16 @@
 //! Integration test: Testing localhost pools using DFlow interface
 //!
-//! This test automatically discovers and tests all Hyperplane pools on localhost.
+//! This test automatically discovers and tests all KDEX pools on localhost.
 //! Make sure your local validator is running with the pools deployed.
 //!
 //! Run with: cargo test --test pool_test --features testing -- --ignored --nocapture
 //!
 //! Environment variables:
-//! - HYPERPLANE_PROGRAM_ID: Program ID (default: kdexv89r17wFQN1MY3auCX7QgWFyshWAji2LsLRVUQU)
+//! - KDEX_PROGRAM_ID: Program ID (default: kdexv89r17wFQN1MY3auCX7QgWFyshWAji2LsLRVUQU)
 //! - RPC: RPC endpoint URL (default: http://127.0.0.1:8899)
 
-use hyperplane::curve::base::CurveType;
-use hyperplane_sdk_dflow::{AccountMap, Amm, HyperplaneAmm, KeyedAccount, QuoteParams, SwapMode};
+use kdex_client::CurveType;
+use kdex_sdk_dflow::{AccountMap, Amm, KDEXAmm, KeyedAccount, QuoteParams, SwapMode};
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{account::Account, hash::hash, pubkey::Pubkey};
 use std::str::FromStr;
@@ -18,11 +18,11 @@ use std::str::FromStr;
 /// Default program ID (staging)
 const DEFAULT_PROGRAM_ID: &str = "kdexv89r17wFQN1MY3auCX7QgWFyshWAji2LsLRVUQU";
 
-/// Get the Hyperplane program ID from environment or use default
+/// Get the KDEX program ID from environment or use default
 fn get_program_id() -> Pubkey {
     let program_str =
-        std::env::var("HYPERPLANE_PROGRAM_ID").unwrap_or_else(|_| DEFAULT_PROGRAM_ID.to_string());
-    Pubkey::from_str(&program_str).expect("Invalid HYPERPLANE_PROGRAM_ID")
+        std::env::var("KDEX_PROGRAM_ID").unwrap_or_else(|_| DEFAULT_PROGRAM_ID.to_string());
+    Pubkey::from_str(&program_str).expect("Invalid KDEX_PROGRAM_ID")
 }
 
 /// Returns the 8-byte discriminator for SwapPool accounts
@@ -35,7 +35,7 @@ fn swap_pool_discriminator() -> [u8; 8] {
     discriminator
 }
 
-/// Discovers all SwapPool accounts owned by the Hyperplane program
+/// Discovers all SwapPool accounts owned by the KDEX program
 fn discover_pools(rpc: &RpcClient, program_id: &Pubkey) -> anyhow::Result<Vec<(Pubkey, Account)>> {
     let accounts = rpc.get_program_accounts(program_id)?;
     let discriminator = swap_pool_discriminator();
@@ -57,7 +57,7 @@ fn test_all_localhost_pools() {
 }
 
 fn run_pool_tests() -> anyhow::Result<()> {
-    println!("=== Hyperplane SDK (DFlow) - Localhost Pool Testing ===\n");
+    println!("=== KDEX SDK (DFlow) - Localhost Pool Testing ===\n");
 
     // Connect to localhost
     let rpc_url = std::env::var("RPC").unwrap_or_else(|_| "http://127.0.0.1:8899".to_string());
@@ -68,7 +68,7 @@ fn run_pool_tests() -> anyhow::Result<()> {
     println!("Program ID: {}", program_id);
 
     // Discover pools
-    println!("Scanning for Hyperplane pools...\n");
+    println!("Scanning for KDEX pools...\n");
     let pools = match discover_pools(&rpc, &program_id) {
         Ok(pools) => pools,
         Err(e) => {
@@ -84,7 +84,7 @@ fn run_pool_tests() -> anyhow::Result<()> {
     if pools.is_empty() {
         println!("No pools found. Make sure:");
         println!("  1. Your local validator is running");
-        println!("  2. Hyperplane pools are deployed");
+        println!("  2. KDEX pools are deployed");
         println!("  3. You've created pools using the CLI\n");
         return Ok(());
     }
@@ -97,7 +97,7 @@ fn run_pool_tests() -> anyhow::Result<()> {
         println!("Pool address: {}", pool_address);
 
         // Create AMM instance with custom program ID
-        let mut amm = match HyperplaneAmm::new_from_keyed_account_with_program_id(
+        let mut amm = match KDEXAmm::new_from_keyed_account_with_program_id(
             &KeyedAccount {
                 key: pool_address,
                 account,
@@ -108,7 +108,7 @@ fn run_pool_tests() -> anyhow::Result<()> {
             Ok(amm) => amm,
             Err(e) => {
                 println!("Failed to create AMM: {}", e);
-                println!("   The account might not be a valid Hyperplane pool\n");
+                println!("   The account might not be a valid KDEX pool\n");
                 continue;
             }
         };
@@ -186,7 +186,7 @@ fn run_pool_tests() -> anyhow::Result<()> {
 
         // Test quotes
         println!("\n  Testing quotes (Token A -> Token B):");
-        let test_amounts = vec![1_000_000, 10_000_000, 100_000_000];
+        let test_amounts = vec![100u64, 250, 500];
 
         for amount in test_amounts {
             let result = if is_oracle {
@@ -228,7 +228,7 @@ fn run_pool_tests() -> anyhow::Result<()> {
                 &QuoteParams {
                     input_mint: mints[1],
                     output_mint: mints[0],
-                    amount: 1_000_000,
+                    amount: 10_000_000,
                     swap_mode: SwapMode::ExactIn,
                 },
                 &oracle_accounts_map,
@@ -237,7 +237,7 @@ fn run_pool_tests() -> anyhow::Result<()> {
             amm.quote(&QuoteParams {
                 input_mint: mints[1],
                 output_mint: mints[0],
-                amount: 1_000_000,
+                amount: 10_000_000,
                 swap_mode: SwapMode::ExactIn,
             })
         };

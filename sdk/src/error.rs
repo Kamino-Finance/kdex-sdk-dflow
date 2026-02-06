@@ -1,4 +1,4 @@
-//! Error types for the Hyperplane SDK
+//! Error types for the KDEX SDK
 //!
 //! This module provides custom error types that give SDK consumers better error handling
 //! capabilities compared to generic anyhow errors.
@@ -9,7 +9,7 @@ use thiserror::Error;
 /// Result type alias using SdkError
 pub type Result<T> = std::result::Result<T, SdkError>;
 
-/// Custom error type for the Hyperplane SDK
+/// Custom error type for the KDEX SDK
 ///
 /// This enum provides specific error variants for different failure cases,
 /// allowing consumers to pattern match and handle errors appropriately.
@@ -62,6 +62,10 @@ pub enum SdkError {
     /// Curve calculation error
     #[error("Curve calculation error: {0}")]
     CurveError(String),
+
+    /// Insufficient liquidity in the destination vault
+    #[error("Insufficient liquidity. Required: {required}, Available: {available}")]
+    InsufficientLiquidity { required: u64, available: u64 },
 
     /// RPC client error
     #[cfg(feature = "rpc-client")]

@@ -116,7 +116,7 @@ impl ClosePool {
         let data = ClosePoolInstructionData::new().try_to_vec().unwrap();
 
         solana_instruction::Instruction {
-            program_id: crate::HYPERPLANE_ID,
+            program_id: crate::KDEX_ID,
             accounts,
             data,
         }
@@ -521,7 +521,7 @@ impl<'a, 'b> ClosePoolCpi<'a, 'b> {
         let data = ClosePoolInstructionData::new().try_to_vec().unwrap();
 
         let instruction = solana_instruction::Instruction {
-            program_id: crate::HYPERPLANE_ID,
+            program_id: crate::KDEX_ID,
             accounts,
             data,
         };

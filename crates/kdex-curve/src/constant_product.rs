@@ -199,11 +199,11 @@ mod tests {
         assert!(result.destination_amount_swapped < 10_000_000);
     }
 
-    /// Test cases matching hyperplane's constant_product_swap_rounding test
+    /// Test cases matching kdex's constant_product_swap_rounding test
     /// These verify the precise source_amount_swapped calculation
     #[test]
-    fn test_swap_rounding_matches_hyperplane() {
-        // Test cases from hyperplane: (source_amount, pool_source, pool_dest, expected_source_swapped, expected_dest_swapped)
+    fn test_swap_rounding_matches_kdex() {
+        // Test cases from kdex: (source_amount, pool_source, pool_dest, expected_source_swapped, expected_dest_swapped)
         let tests: &[(u128, u128, u128, u128, u128)] = &[
             (10, 4_000_000, 70_000_000_000, 10, 174_999),
             (20, 30_000 - 20, 10_000, 18, 6), // source can be 18 to get 6 dest

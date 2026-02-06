@@ -7,5 +7,5 @@
 
 use solana_pubkey::{pubkey, Pubkey};
 
-/// `hyperplane` program ID.
-pub const HYPERPLANE_ID: Pubkey = pubkey!("kdexv89r17wFQN1MY3auCX7QgWFyshWAji2LsLRVUQU");
+/// `kdex` program ID.
+pub const KDEX_ID: Pubkey = pubkey!("kdexv89r17wFQN1MY3auCX7QgWFyshWAji2LsLRVUQU");

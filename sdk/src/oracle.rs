@@ -1,7 +1,7 @@
 //! Oracle price fetching and calculation support for oracle-based curves
 //!
-//! This module provides functionality to fetch Scope oracle prices and calculate
-//! quotes for oracle-based curves (ConstantSpreadOracle and InventorySkewOracle).
+//! This module re-exports oracle functionality from kdex-client with
+//! error conversion to SDK-specific error types.
 //!
 //! ## Price Chain Mechanism
 //!
@@ -10,24 +10,9 @@
 //! - Derived prices: `[X, Y, MAX, MAX]` → `prices[X] * prices[Y]` (e.g., for LSTs)
 
 use crate::error::{Result, SdkError};
-use hyperplane::curve::fees::Fees;
-use kdex_curve::oracle::InventorySkewParams;
-pub use kdex_curve::TradeDirection;
+use kdex_client::generated::types::Fees;
+use kdex_client::TradeDirection;
 use solana_sdk::account::Account;
-use std::mem::size_of;
-
-/// Price chain terminator value (u16::MAX)
-const PRICE_CHAIN_TERMINATOR: u16 = u16::MAX;
-
-/// Convert hyperplane TradeDirection to kdex_curve TradeDirection
-pub fn convert_trade_direction(
-    direction: hyperplane::curve::calculator::TradeDirection,
-) -> TradeDirection {
-    match direction {
-        hyperplane::curve::calculator::TradeDirection::AtoB => TradeDirection::AtoB,
-        hyperplane::curve::calculator::TradeDirection::BtoA => TradeDirection::BtoA,
-    }
-}
 
 /// Fetches a single Scope oracle price from the price feed account
 ///
@@ -41,56 +26,8 @@ pub fn convert_trade_direction(
 /// # Errors
 /// * `InvalidOracleConfig` - If price index is out of bounds or account is invalid
 pub fn fetch_scope_price(price_feed_account: &Account, price_index: u16) -> Result<(u64, i32)> {
-    // Validate price index is within bounds
-    if (price_index as usize) >= scope_types::MAX_ENTRIES {
-        return Err(SdkError::InvalidOracleConfig(format!(
-            "Price index {} out of bounds (max: {})",
-            price_index,
-            scope_types::MAX_ENTRIES
-        )));
-    }
-
-    // Validate account owner is the Scope program
-    if price_feed_account.owner != scope_types::id() {
-        return Err(SdkError::InvalidOracleConfig(format!(
-            "Invalid Scope account owner. Expected: {}, Got: {}",
-            scope_types::id(),
-            price_feed_account.owner
-        )));
-    }
-
-    // OraclePrices layout: discriminator(8) + oracle_mappings(32) + prices[512]
-    // Each DatedPrice is size_of::<DatedPrice>() bytes
-    let dated_price_size = size_of::<scope_types::DatedPrice>();
-    let offset = 8_usize
-        .checked_add(32)
-        .and_then(|base| {
-            (price_index as usize)
-                .checked_mul(dated_price_size)
-                .and_then(|product| base.checked_add(product))
-        })
-        .ok_or_else(|| SdkError::InvalidOracleConfig("Offset calculation overflow".into()))?;
-
-    let end_offset = offset
-        .checked_add(dated_price_size)
-        .ok_or_else(|| SdkError::InvalidOracleConfig("End offset calculation overflow".into()))?;
-
-    if price_feed_account.data.len() < end_offset {
-        return Err(SdkError::InvalidOracleConfig(format!(
-            "Account data too short for price index {}",
-            price_index
-        )));
-    }
-
-    // Deserialize the DatedPrice at the specified index
-    let dated_price: &scope_types::DatedPrice =
-        bytemuck::from_bytes(&price_feed_account.data[offset..end_offset]);
-
-    // Note: We don't validate price age here since this is a quote/simulation
-    // The actual on-chain transaction will validate the price age
-
-    // Return price value and exponent (convert u64 exp to i32)
-    Ok((dated_price.price.value, dated_price.price.exp as i32))
+    kdex_client::oracle::fetch_scope_price(price_feed_account, price_index)
+        .map_err(oracle_error_to_sdk_error)
 }
 
 /// Fetches and multiplies prices from a Scope oracle price chain
@@ -105,42 +42,8 @@ pub fn fetch_scope_price_chain(
     price_feed_account: &Account,
     price_chain: &[u16; 4],
 ) -> Result<(u128, i32)> {
-    // Validate account owner is the Scope program
-    if price_feed_account.owner != scope_types::id() {
-        return Err(SdkError::InvalidOracleConfig(format!(
-            "Invalid Scope account owner. Expected: {}, Got: {}",
-            scope_types::id(),
-            price_feed_account.owner
-        )));
-    }
-
-    // Count valid indices in chain
-    let chain_len = price_chain
-        .iter()
-        .take_while(|&&idx| idx != PRICE_CHAIN_TERMINATOR)
-        .count();
-
-    if chain_len == 0 {
-        return Err(SdkError::InvalidOracleConfig("Price chain is empty".into()));
-    }
-
-    // Fetch first price
-    let (first_value, first_exp) = fetch_scope_price(price_feed_account, price_chain[0])?;
-    let mut combined_value = first_value as u128;
-    let mut combined_exp = first_exp;
-
-    // Multiply remaining prices in the chain
-    for &price_index in price_chain.iter().skip(1).take(chain_len.saturating_sub(1)) {
-        let (value, exp) = fetch_scope_price(price_feed_account, price_index)?;
-        combined_value = combined_value
-            .checked_mul(value as u128)
-            .ok_or_else(|| SdkError::CurveError("Price multiplication overflow".into()))?;
-        combined_exp = combined_exp
-            .checked_add(exp)
-            .ok_or_else(|| SdkError::CurveError("Exponent addition overflow".into()))?;
-    }
-
-    Ok((combined_value, combined_exp))
+    kdex_client::oracle::fetch_scope_price_chain(price_feed_account, price_chain)
+        .map_err(oracle_error_to_sdk_error)
 }
 
 /// Calculate quote for ConstantSpreadOracle curve
@@ -150,6 +53,7 @@ pub fn fetch_scope_price_chain(
 /// # Arguments
 /// * `fees` - Pool fees configuration
 /// * `amount_in` - Amount to swap in
+/// * `destination_vault_amount` - Current balance in destination vault
 /// * `trade_direction` - Direction of the trade
 /// * `curve_data` - Raw curve account data
 /// * `scope_price_feed_account` - Scope oracle account
@@ -159,50 +63,20 @@ pub fn fetch_scope_price_chain(
 pub fn calculate_constant_spread_quote(
     fees: &Fees,
     amount_in: u64,
-    trade_direction: hyperplane::curve::calculator::TradeDirection,
+    destination_vault_amount: u64,
+    trade_direction: TradeDirection,
     curve_data: &[u8],
     scope_price_feed_account: &Account,
 ) -> Result<(u64, u64, u64)> {
-    let trade_direction = convert_trade_direction(trade_direction);
-    // Deserialize the full ConstantSpreadOracleCurve to access all parameters
-    let mut data = curve_data;
-    let curve: hyperplane::state::ConstantSpreadOracleCurve =
-        anchor_lang::AccountDeserialize::try_deserialize(&mut data)
-            .map_err(|e| SdkError::DeserializationError(e.to_string()))?;
-
-    // Fetch Scope price chain
-    let (price_value, price_exp) =
-        fetch_scope_price_chain(scope_price_feed_account, &curve.price_chain)?;
-
-    // Calculate fees (same as on-chain)
-    let trade_fee = fees
-        .trading_fee(amount_in as u128)
-        .map_err(|e| SdkError::CurveError(e.to_string()))?;
-    let owner_fee = fees
-        .owner_trading_fee(amount_in as u128)
-        .map_err(|e| SdkError::CurveError(e.to_string()))?;
-    let total_fees = trade_fee
-        .checked_add(owner_fee)
-        .ok_or_else(|| SdkError::CurveError("Fee calculation overflow".into()))?;
-    let source_amount_less_fees = (amount_in as u128)
-        .checked_sub(total_fees)
-        .ok_or_else(|| SdkError::CurveError("Amount too small to cover fees".into()))?;
-
-    // Calculate swap using ConstantSpread logic from kdex-curve
-    let swap_result = kdex_curve::oracle::constant_spread_swap(
-        source_amount_less_fees,
-        price_value as u64,
-        price_exp as u64,
-        curve.bps_from_oracle,
+    kdex_client::oracle::calculate_constant_spread_quote(
+        fees,
+        amount_in,
+        destination_vault_amount,
         trade_direction,
+        curve_data,
+        scope_price_feed_account,
     )
-    .map_err(|e| SdkError::CurveError(e.to_string()))?;
-
-    Ok((
-        swap_result.source_amount_swapped as u64,
-        swap_result.destination_amount_swapped as u64,
-        total_fees as u64,
-    ))
+    .map_err(oracle_error_to_sdk_error)
 }
 
 /// Calculate quote for InventorySkewOracle curve
@@ -225,73 +99,38 @@ pub fn calculate_inventory_skew_quote(
     amount_in: u64,
     source_vault_amount: u64,
     destination_vault_amount: u64,
-    trade_direction: hyperplane::curve::calculator::TradeDirection,
+    trade_direction: TradeDirection,
     curve_data: &[u8],
     scope_price_feed_account: &Account,
 ) -> Result<(u64, u64, u64)> {
-    let trade_direction = convert_trade_direction(trade_direction);
-    // Deserialize the full InventorySkewOracleCurve to access all parameters
-    let mut data = curve_data;
-    let curve: hyperplane::state::InventorySkewOracleCurve =
-        anchor_lang::AccountDeserialize::try_deserialize(&mut data)
-            .map_err(|e| SdkError::DeserializationError(e.to_string()))?;
-
-    // Fetch Scope price chain
-    let (price_value, price_exp) =
-        fetch_scope_price_chain(scope_price_feed_account, &curve.price_chain)?;
-
-    // Calculate fees (same as on-chain)
-    let trade_fee = fees
-        .trading_fee(amount_in as u128)
-        .map_err(|e| SdkError::CurveError(e.to_string()))?;
-    let owner_fee = fees
-        .owner_trading_fee(amount_in as u128)
-        .map_err(|e| SdkError::CurveError(e.to_string()))?;
-    let total_fees = trade_fee
-        .checked_add(owner_fee)
-        .ok_or_else(|| SdkError::CurveError("Fee calculation overflow".into()))?;
-    let source_amount_less_fees = (amount_in as u128)
-        .checked_sub(total_fees)
-        .ok_or_else(|| SdkError::CurveError("Amount too small to cover fees".into()))?;
-
-    // Convert curve parameters to kdex-curve InventorySkewParams
-    let params = InventorySkewParams::new(
-        curve.base_spread_bps,
-        curve.size_spread_bps,
-        curve.skew_bps,
-        curve.inv_equilibrium,
-        curve.inv_max,
-        curve.q_ref,
-        curve.alpha,
-    );
-
-    // Calculate ratios using the common helper from kdex-curve
-    let (current_inventory_ratio, swap_size_ratio) =
-        kdex_curve::oracle::inventory_skew::calculate_ratios(
-            source_amount_less_fees,
-            price_value as u64,
-            price_exp as u64,
-            trade_direction,
-            source_vault_amount as u128,
-            destination_vault_amount as u128,
-        )
-        .map_err(|e| SdkError::CurveError(e.to_string()))?;
-
-    // Calculate swap using InventorySkew logic from kdex-curve
-    let swap_result = kdex_curve::oracle::inventory_skew_swap(
-        source_amount_less_fees,
-        price_value as u64,
-        price_exp as u64,
+    kdex_client::oracle::calculate_inventory_skew_quote(
+        fees,
+        amount_in,
+        source_vault_amount,
+        destination_vault_amount,
         trade_direction,
-        current_inventory_ratio,
-        swap_size_ratio,
-        &params,
+        curve_data,
+        scope_price_feed_account,
     )
-    .map_err(|e| SdkError::CurveError(e.to_string()))?;
+    .map_err(oracle_error_to_sdk_error)
+}
 
-    Ok((
-        swap_result.source_amount_swapped as u64,
-        swap_result.destination_amount_swapped as u64,
-        total_fees as u64,
-    ))
+/// Convert kdex-client OracleError to SDK-specific SdkError
+fn oracle_error_to_sdk_error(err: kdex_client::oracle::OracleError) -> SdkError {
+    match err {
+        kdex_client::oracle::OracleError::InvalidOracleConfig(msg) => {
+            SdkError::InvalidOracleConfig(msg)
+        }
+        kdex_client::oracle::OracleError::CurveError(msg) => SdkError::CurveError(msg),
+        kdex_client::oracle::OracleError::DeserializationError(msg) => {
+            SdkError::DeserializationError(msg)
+        }
+        kdex_client::oracle::OracleError::InsufficientLiquidity {
+            required,
+            available,
+        } => SdkError::InsufficientLiquidity {
+            required,
+            available,
+        },
+    }
 }

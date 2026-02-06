@@ -1,12 +1,12 @@
-//! Pool discovery for Hyperplane
+//! Pool discovery for KDEX
 //!
-//! This module provides functionality to discover and list Hyperplane pools.
+//! This module provides functionality to discover and list KDEX pools.
 
 use solana_sdk::hash::hash;
 use solana_sdk::pubkey::Pubkey;
 
-/// Default Hyperplane program ID
-pub const HYPERPLANE_PROGRAM_ID: &str = "kdexv89r17wFQN1MY3auCX7QgWFyshWAji2LsLRVUQU";
+/// Default KDEX program ID
+pub const KDEX_PROGRAM_ID: &str = "kdexv89r17wFQN1MY3auCX7QgWFyshWAji2LsLRVUQU";
 
 /// Returns the 8-byte discriminator for SwapPool accounts
 /// Computed as: hash("account:SwapPool")[..8]
@@ -31,7 +31,7 @@ pub struct PoolInfo {
     pub lamports: u64,
 }
 
-/// Discover all Hyperplane pools from a list of program accounts
+/// Discover all KDEX pools from a list of program accounts
 ///
 /// # Arguments
 /// * `accounts` - List of (pubkey, account) tuples from `get_program_accounts`
@@ -53,11 +53,11 @@ pub fn filter_pool_accounts(accounts: &[(Pubkey, solana_sdk::account::Account)])
         .collect()
 }
 
-/// Discover all Hyperplane pools using an RPC client
+/// Discover all KDEX pools using an RPC client
 ///
 /// # Arguments
 /// * `client` - RPC client
-/// * `program_id` - Hyperplane program ID (use `hyperplane::ID` or custom)
+/// * `program_id` - KDEX program ID (use `kdex::ID` or custom)
 ///
 /// # Returns
 /// A vector of `PoolInfo` for all discovered SwapPool accounts
@@ -70,11 +70,11 @@ pub fn discover_pools(
     Ok(filter_pool_accounts(&accounts))
 }
 
-/// Discover all Hyperplane pools using an async RPC client
+/// Discover all KDEX pools using an async RPC client
 ///
 /// # Arguments
 /// * `client` - Async RPC client
-/// * `program_id` - Hyperplane program ID (use `hyperplane::ID` or custom)
+/// * `program_id` - KDEX program ID (use `kdex::ID` or custom)
 ///
 /// # Returns
 /// A vector of `PoolInfo` for all discovered SwapPool accounts

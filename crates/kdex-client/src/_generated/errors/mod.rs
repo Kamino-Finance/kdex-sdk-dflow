@@ -5,6 +5,6 @@
 //! <https://github.com/codama-idl/codama>
 //!
 
-pub(crate) mod hyperplane;
+pub(crate) mod kdex;
 
-pub use self::hyperplane::HyperplaneError;
+pub use self::kdex::KdexError;

@@ -1,4 +1,4 @@
-//! Error types for the Hyperplane SDK
+//! Error types for the KDEX SDK
 //!
 //! This module provides custom error types that give SDK consumers better error handling
 //! capabilities compared to generic anyhow errors.
@@ -9,7 +9,7 @@ use thiserror::Error;
 /// Result type alias using SdkError
 pub type Result<T> = std::result::Result<T, SdkError>;
 
-/// Custom error type for the Hyperplane SDK
+/// Custom error type for the KDEX SDK
 ///
 /// This enum provides specific error variants for different failure cases,
 /// allowing consumers to pattern match and handle errors appropriately.
