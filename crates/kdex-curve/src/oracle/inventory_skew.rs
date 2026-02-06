@@ -364,19 +364,20 @@ pub fn calculate_ratios(
     };
 
     // Calculate ratios normalized to the destination token
+    // Oracle price = B per A (e.g., USDC per SOL)
     // For AtoB: normalize to token B, for BtoA: normalize to token A
     let (current_inventory_ratio, swap_size_ratio) = match trade_direction {
         TradeDirection::AtoB => {
             // Normalize to token B
-            // value_of_a_in_b = pool_token_a_amount * scale / price_value
-            let value_of_a_in_b = mul_scale_div(pool_token_a_amount, price_exp, price_value)?;
+            // value_of_a_in_b = pool_token_a_amount * price_value / scale
+            let value_of_a_in_b = mul_div_scale(pool_token_a_amount, price_value, price_exp)?;
             let total_pool_in_b = checked_add(value_of_a_in_b, pool_token_b_amount)?;
 
             let current_inventory_ratio =
                 checked_div(checked_mul(value_of_a_in_b, 10000)?, total_pool_in_b)? as u64;
 
-            // swap_value_in_b = source_amount * scale / price_value
-            let swap_value_in_b = mul_scale_div(source_amount, price_exp, price_value)?;
+            // swap_value_in_b = source_amount * price_value / scale
+            let swap_value_in_b = mul_div_scale(source_amount, price_value, price_exp)?;
             let swap_size_ratio =
                 checked_div(checked_mul(swap_value_in_b, 10000)?, total_pool_in_b)? as u64;
 
@@ -384,17 +385,15 @@ pub fn calculate_ratios(
         }
         TradeDirection::BtoA => {
             // Normalize to token A
-            // value_of_b_in_a = pool_token_b_amount * price_value / scale
-            // Use mul_div_scale to avoid overflow with large price values and exponents
-            let value_of_b_in_a = mul_div_scale(pool_token_b_amount, price_value, price_exp)?;
+            // value_of_b_in_a = pool_token_b_amount * scale / price_value
+            let value_of_b_in_a = mul_scale_div(pool_token_b_amount, price_exp, price_value)?;
             let total_pool_in_a = checked_add(pool_token_a_amount, value_of_b_in_a)?;
 
             let current_inventory_ratio =
                 checked_div(checked_mul(pool_token_a_amount, 10000)?, total_pool_in_a)? as u64;
 
-            // swap_value_in_a = source_amount * price_value / scale
-            // Use mul_div_scale to avoid overflow with large price values and exponents
-            let swap_value_in_a = mul_div_scale(source_amount, price_value, price_exp)?;
+            // swap_value_in_a = source_amount * scale / price_value
+            let swap_value_in_a = mul_scale_div(source_amount, price_exp, price_value)?;
             let swap_size_ratio =
                 checked_div(checked_mul(swap_value_in_a, 10000)?, total_pool_in_a)? as u64;
 
@@ -409,7 +408,7 @@ pub fn calculate_ratios(
 ///
 /// # Arguments
 /// * `source_amount` - Amount of source tokens to swap
-/// * `price_value` - Oracle price value as u128 (supports multiplied price chains, ratio of raw A units to raw B units, scaled by 10^price_exp)
+/// * `price_value` - Oracle price value as u128 (supports multiplied price chains, B per A ratio scaled by 10^price_exp)
 /// * `price_exp` - Oracle price exponent
 /// * `trade_direction` - Direction of the trade (AtoB or BtoA)
 /// * `current_inventory_ratio` - Current inventory as a ratio (scaled by 10000, e.g., 5000 = 0.5 = 50%)
@@ -452,31 +451,33 @@ pub fn swap(
 
     let (source_amount_swapped, destination_amount_swapped) = match trade_direction {
         // User selling A for B - receives bid price (MM buys A)
+        // Oracle price = B per A (e.g., USDC per SOL)
+        // dest_B = src_A * effective_price / 10^exp
         TradeDirection::AtoB => {
-            // effective_price = price_value * (BPS_DENOMINATOR + bid_spread_bps) / BPS_DENOMINATOR
+            // Bid: lower effective price → user receives less B per A
             let effective_price = mul_div(
                 price_value,
-                checked_add(BPS_DENOMINATOR, bid_spread_bps as u128)?,
+                checked_sub(BPS_DENOMINATOR, bid_spread_bps as u128)?,
+                BPS_DENOMINATOR,
+            )?;
+
+            // destination = source_amount * effective_price / scale
+            let destination = mul_div_scale(source_amount, effective_price, price_exp)?;
+
+            (source_amount, destination)
+        }
+        // User buying A with B - pays ask price (MM sells A)
+        // dest_A = src_B * 10^exp / effective_price
+        TradeDirection::BtoA => {
+            // Ask: higher effective price → user receives less A per B
+            let effective_price = mul_div(
+                price_value,
+                checked_add(BPS_DENOMINATOR, ask_spread_bps as u128)?,
                 BPS_DENOMINATOR,
             )?;
 
             // destination = source_amount * scale / effective_price
             let destination = mul_scale_div(source_amount, price_exp, effective_price)?;
-
-            (source_amount, destination)
-        }
-        // User buying A with B - pays ask price (MM sells A)
-        TradeDirection::BtoA => {
-            // effective_price = price_value * (BPS_DENOMINATOR - ask_spread_bps) / BPS_DENOMINATOR
-            let effective_price = mul_div(
-                price_value,
-                checked_sub(BPS_DENOMINATOR, ask_spread_bps as u128)?,
-                BPS_DENOMINATOR,
-            )?;
-
-            // destination = source_amount * effective_price / scale
-            // Use mul_div_scale to avoid overflow with large price values and exponents
-            let destination = mul_div_scale(source_amount, effective_price, price_exp)?;
 
             (source_amount, destination)
         }
@@ -574,9 +575,11 @@ mod tests {
     #[test]
     fn test_swap_balanced() {
         let params = make_params();
+        // Price = 100 B per A (oracle reports B/A, e.g., 100 USDC per token)
+        // AtoB: user sells 100 A → gets ~10000 B minus spread
         let result = swap(
-            100_000000,        // 100 tokens (with 6 decimals)
-            100_00000000_u128, // $100 price
+            100_000000,        // 100 tokens A (with 6 decimals)
+            100_00000000_u128, // price = 100 B per A
             8,
             TradeDirection::AtoB,
             5000, // current_inventory_ratio = 0.5 (at equilibrium)
@@ -585,11 +588,11 @@ mod tests {
         )
         .unwrap();
 
-        // Should get slightly less than 1 token due to spreads
-        // With base_spread_bps = 10 (0.1%), size f = 1.0, spread = 5 + 20 = 25 bps = 0.25%
-        // Effective price = $100.25, output = 100 / 100.25 ≈ 0.9975 tokens
-        assert!(result.destination_amount_swapped > 990000);
-        assert!(result.destination_amount_swapped < 1000000);
+        // bid_spread = 5 + 20 = 25 bps = 0.25%
+        // effective_price = 100 * (1 - 0.0025) = 99.75
+        // dest = 100_000000 * 99.75 = 9975_000000
+        assert!(result.destination_amount_swapped > 9900_000000);
+        assert!(result.destination_amount_swapped < 10000_000000);
     }
 
     #[test]
@@ -714,11 +717,10 @@ mod tests {
             inv_ratio,
             swap_ratio,
             &params,
-        )
-        .unwrap();
+        );
 
-        // Should get a valid result
-        assert!(result.source_amount_swapped == source_amount);
-        assert!(result.destination_amount_swapped > 0);
+        // With a very large price (B per A ratio), BtoA divides by price,
+        // so the result may be zero for small source amounts
+        assert!(result.is_ok() || matches!(result, Err(CurveError::ZeroTradingTokens)));
     }
 }

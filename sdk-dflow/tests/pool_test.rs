@@ -186,7 +186,12 @@ fn run_pool_tests() -> anyhow::Result<()> {
 
         // Test quotes
         println!("\n  Testing quotes (Token A -> Token B):");
-        let test_amounts = vec![100u64, 250, 500];
+        // Oracle pools need larger A→B amounts (price ~10^-6 B/A means ~10^6 raw A per raw B)
+        let test_amounts = if is_oracle {
+            vec![1_000_000u64, 5_000_000, 10_000_000]
+        } else {
+            vec![100u64, 250, 500]
+        };
 
         for amount in test_amounts {
             let result = if is_oracle {
@@ -222,13 +227,15 @@ fn run_pool_tests() -> anyhow::Result<()> {
         }
 
         // Test reverse direction
+        // Oracle pools: each raw B worth ~10^6 raw A, so use small B amount
+        let reverse_amount = if is_oracle { 10u64 } else { 10_000_000 };
         println!("\n  Testing quotes (Token B -> Token A):");
         let result = if is_oracle {
             amm.quote_oracle(
                 &QuoteParams {
                     input_mint: mints[1],
                     output_mint: mints[0],
-                    amount: 10_000_000,
+                    amount: reverse_amount,
                     swap_mode: SwapMode::ExactIn,
                 },
                 &oracle_accounts_map,
@@ -237,14 +244,14 @@ fn run_pool_tests() -> anyhow::Result<()> {
             amm.quote(&QuoteParams {
                 input_mint: mints[1],
                 output_mint: mints[0],
-                amount: 10_000_000,
+                amount: reverse_amount,
                 swap_mode: SwapMode::ExactIn,
             })
         };
 
         match result {
             Ok(quote) => {
-                println!("    1,000,000 in -> {} out", quote.out_amount);
+                println!("    {} in -> {} out", reverse_amount, quote.out_amount);
             }
             Err(e) => {
                 println!("    Quote failed: {}", e);

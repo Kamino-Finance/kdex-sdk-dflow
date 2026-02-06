@@ -14,7 +14,7 @@ std = []
 
 [dependencies]
 # Math utilities (for stable curve U256)
-spl-math = "0.3"
+spl-math = { version = "0.3", features = ["no-entrypoint"] }
 
 # Error handling
 thiserror = "1.0"

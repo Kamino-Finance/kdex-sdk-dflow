@@ -73,7 +73,7 @@ fn mul_div_scale(a: u128, b: u128, exp: u64) -> Result<u128> {
 ///
 /// # Arguments
 /// * `source_amount` - Amount of source tokens to swap
-/// * `price_value` - Oracle price value as u128 (supports multiplied price chains)
+/// * `price_value` - Oracle price value as u128 (B per A ratio, supports multiplied price chains)
 /// * `price_exp` - Oracle price exponent (e.g., 8 means price = value * 10^-8)
 /// * `bps_from_oracle` - Spread in basis points (e.g., 50 = 0.5%)
 /// * `trade_direction` - Direction of the trade (AtoB or BtoA)
@@ -82,27 +82,28 @@ fn mul_div_scale(a: u128, b: u128, exp: u64) -> Result<u128> {
 /// A `SwapResult` containing the amounts swapped
 ///
 /// # Price Interpretation
-/// The oracle provides `price = price_value * 10^(-price_exp)`
+/// The oracle provides `price = price_value * 10^(-price_exp)`, representing
+/// the amount of token B per unit of token A (e.g., USDC per SOL).
 ///
 /// For example:
-/// - price_value = 100_00000000, price_exp = 8 → price = 100.0
-/// - price_value = 6462236900000, price_exp = 8 → price = 64622.369
+/// - price_value = 100_00000000, price_exp = 8 → price = 100.0 B per A
+/// - price_value = 6462236900000, price_exp = 8 → price = 64622.369 B per A
 ///
 /// # Example
 /// ```
 /// use kdex_curve::{oracle::constant_spread, TradeDirection};
 ///
-/// // Swap 1000 USDC for token B, price is $100 per B, 0.5% spread
+/// // Sell 100 token A at price 100 B per A, 0.5% spread
 /// let result = constant_spread::swap(
-///     1000_000000,      // 1000 USDC (6 decimals)
-///     100_00000000_u128, // price = $100.00
+///     100_000000,       // 100 token A (6 decimals)
+///     100_00000000_u128, // price = 100 B per A
 ///     8,                // 8 decimal exponent
 ///     50,               // 0.5% spread
 ///     TradeDirection::AtoB,
 /// ).unwrap();
 ///
-/// // Get ~9.95 tokens (slightly less than 10 due to spread)
-/// assert!(result.destination_amount_swapped < 10_000000);
+/// // Get ~9950 tokens B (slightly less than 10000 due to spread)
+/// assert!(result.destination_amount_swapped > 9900_000000);
 /// ```
 pub fn swap(
     source_amount: u128,
@@ -118,35 +119,34 @@ pub fn swap(
     let bps = bps_from_oracle as u128;
 
     let (source_amount_swapped, destination_amount_swapped) = match trade_direction {
-        // Pool is selling token B for token A (user buying B with A)
-        // User pays more: oracle_price * (1 + bps/10000)
+        // User selling A for B — receives bid price (lower)
+        // Oracle price = B per A (e.g., USDC per SOL)
+        // dest_B = src_A * effective_price / 10^exp
         TradeDirection::AtoB => {
-            // Effective price = price_value * (BPS_DENOM + bps) / BPS_DENOM
-            let effective_price_value = checked_div(
-                checked_mul(price_value, checked_add(BPS_DENOMINATOR, bps)?)?,
-                BPS_DENOMINATOR,
-            )?;
-
-            // destination_amount = source_amount / effective_price
-            // destination = source_amount * 10^price_exp / effective_price_value
-            let destination_amount =
-                mul_scale_div(source_amount, price_exp, effective_price_value)?;
-
-            (source_amount, destination_amount)
-        }
-        // Pool is buying token B for token A (user selling B for A)
-        // User receives less: oracle_price * (1 - bps/10000)
-        TradeDirection::BtoA => {
-            // Effective price = price_value * (BPS_DENOM - bps) / BPS_DENOM
+            // Bid: lower effective price → user receives less B per A
             let effective_price_value = checked_div(
                 checked_mul(price_value, checked_sub(BPS_DENOMINATOR, bps)?)?,
                 BPS_DENOMINATOR,
             )?;
 
-            // destination_amount = source_amount * effective_price
-            // destination = source_amount * effective_price_value / 10^price_exp
+            // destination = source_amount * effective_price / scale
             let destination_amount =
                 mul_div_scale(source_amount, effective_price_value, price_exp)?;
+
+            (source_amount, destination_amount)
+        }
+        // User buying A with B — pays ask price (higher)
+        // dest_A = src_B * 10^exp / effective_price
+        TradeDirection::BtoA => {
+            // Ask: higher effective price → user receives less A per B
+            let effective_price_value = checked_div(
+                checked_mul(price_value, checked_add(BPS_DENOMINATOR, bps)?)?,
+                BPS_DENOMINATOR,
+            )?;
+
+            // destination = source_amount * scale / effective_price
+            let destination_amount =
+                mul_scale_div(source_amount, price_exp, effective_price_value)?;
 
             (source_amount, destination_amount)
         }
@@ -168,10 +168,10 @@ mod tests {
 
     #[test]
     fn test_swap_a_to_b() {
-        // Oracle price: 100 USD per token B
-        // price_value = 100_00000000 (100 with 8 decimals)
+        // Oracle price: 100 B per A (e.g., 1 token A = 100 USDC)
+        // price_value = 100_00000000, price_exp = 8
         // bps = 50 (0.5% spread)
-        let source_amount = 1000_000000u128; // 1000 token A (USDC with 6 decimals)
+        let source_amount = 100_000000u128; // 100 token A (6 decimals)
 
         let result = swap(
             source_amount,
@@ -182,18 +182,17 @@ mod tests {
         )
         .unwrap();
 
-        // User buying B with A, pays oracle_price * 1.005
-        // Effective price = 100 * 1.005 = 100.5
-        // destination = 1000 / 100.5 = 9.950248...
+        // AtoB (sell A for B): effective_price = 100 * (1 - 0.005) = 99.5
+        // destination = 100 * 99.5 = 9950 tokens B
         assert_eq!(result.source_amount_swapped, source_amount);
-        assert!(result.destination_amount_swapped > 9_000000);
-        assert!(result.destination_amount_swapped < 10_000000);
+        assert!(result.destination_amount_swapped > 9900_000000);
+        assert!(result.destination_amount_swapped < 10000_000000);
     }
 
     #[test]
     fn test_swap_b_to_a() {
-        // Oracle price: 100 USD per token B
-        let source_amount = 10_000000u128; // 10 token B
+        // Oracle price: 100 B per A
+        let source_amount = 1000_000000u128; // 1000 token B
 
         let result = swap(
             source_amount,
@@ -204,30 +203,29 @@ mod tests {
         )
         .unwrap();
 
-        // User selling B for A, receives oracle_price * 0.995
-        // Effective price = 100 * 0.995 = 99.5
-        // destination = 10 * 99.5 = 995 USDC
+        // BtoA (buy A with B): effective_price = 100 * (1 + 0.005) = 100.5
+        // destination = 1000 / 100.5 = 9.950248... tokens A
         assert_eq!(result.source_amount_swapped, source_amount);
-        assert_eq!(result.destination_amount_swapped, 995_000000); // Exactly 995 USDC
+        assert!(result.destination_amount_swapped > 9_000000);
+        assert!(result.destination_amount_swapped < 10_000000);
     }
 
     #[test]
     fn test_swap_zero_spread() {
-        // With zero spread, should be exact 1:1 at price
-        let result = swap(1000_000000, 100_00000000_u128, 8, 0, TradeDirection::AtoB).unwrap();
-        // 1000 / 100 = 10
-        assert_eq!(result.destination_amount_swapped, 10_000000);
+        // With zero spread, 100 A at price 100 B/A → 10000 B
+        let result = swap(100_000000, 100_00000000_u128, 8, 0, TradeDirection::AtoB).unwrap();
+        // 100 * 100 = 10000
+        assert_eq!(result.destination_amount_swapped, 10000_000000);
     }
 
     #[test]
     fn test_swap_different_decimals() {
-        // Price: 0.001 (1000 B per A)
-        // price_value = 1_000000, price_exp = 9 → price = 0.001 A per B
-        // Swapping 1 A (1_000000 raw units) should give 1000 B
-        // destination = source * 10^exp / price = 1_000000 * 10^9 / 1_000000 = 10^9
+        // Price: 0.001 B per A (i.e., 1 A is worth 0.001 B)
+        // price_value = 1_000000, price_exp = 9 → price = 0.001
+        // Swapping 1 A should give 0.001 B
+        // destination = source * price / 10^exp = 1_000000 * 1_000000 / 10^9 = 1000
         let result = swap(1_000000, 1_000000_u128, 9, 0, TradeDirection::AtoB).unwrap();
-        // Result is in raw units: 10^9 raw units = 1 token (if 9 decimals) or 1000 tokens (if 6 decimals)
-        assert_eq!(result.destination_amount_swapped, 1_000_000_000);
+        assert_eq!(result.destination_amount_swapped, 1000);
     }
 
     #[test]
@@ -237,18 +235,12 @@ mod tests {
 
     #[test]
     fn test_swap_high_spread() {
-        // 50% spread (5000 bps)
-        let result = swap(
-            1000_000000,
-            100_00000000_u128,
-            8,
-            5000,
-            TradeDirection::AtoB,
-        )
-        .unwrap();
-        // Effective price = 150, destination = 1000 / 150 = 6.666...
-        assert!(result.destination_amount_swapped > 6_000000);
-        assert!(result.destination_amount_swapped < 7_000000);
+        // 50% spread (5000 bps), price = 100 B per A
+        // AtoB: effective_price = 100 * (1 - 0.5) = 50
+        // destination = 100 * 50 = 5000 tokens B
+        let result = swap(100_000000, 100_00000000_u128, 8, 5000, TradeDirection::AtoB).unwrap();
+        assert!(result.destination_amount_swapped > 4900_000000);
+        assert!(result.destination_amount_swapped < 5100_000000);
     }
 
     #[test]
