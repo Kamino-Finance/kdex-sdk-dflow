@@ -3,7 +3,7 @@ name = "kdex-client"
 version = "0.1.0"
 edition = "2021"
 description = "Generated Rust client for KDEX AMM program"
-license = "MIT"
+license = "BUSL-1.1"
 authors = ["Kamino Finance"]
 repository = "https://github.com/Kamino-Finance/kdex-private"
 

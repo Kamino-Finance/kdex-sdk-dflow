@@ -72,7 +72,7 @@ pub enum KdexError {
     InsufficientPoolTokenFunds = 0x1783,
     /// 6020 - Pool admin is not correct
     #[error("Pool admin is not correct")]
-    InvaliPoolAdmin = 0x1784,
+    InvalidPoolAdmin = 0x1784,
     /// 6021 - Token 2022 extension is not supported
     #[error("Token 2022 extension is not supported")]
     InvalidTokenExtension = 0x1785,

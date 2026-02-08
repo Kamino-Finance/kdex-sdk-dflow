@@ -59,10 +59,8 @@ pub fn apply_price_offset(price_value: u128, price_offset_bps: i64) -> crate::Re
     }
 
     // Use larger type to handle potential overflow during calculation
-    let bps_denom = BPS_DENOMINATOR;
-    let offset = price_offset_bps as i128;
-    let multiplier = (bps_denom as i128)
-        .checked_add(offset)
+    let multiplier = (BPS_DENOMINATOR as i128)
+        .checked_add(price_offset_bps as i128)
         .ok_or(CurveError::Overflow)?;
 
     // Ensure multiplier is positive
@@ -74,7 +72,7 @@ pub fn apply_price_offset(price_value: u128, price_offset_bps: i64) -> crate::Re
     let adjusted = price_value
         .checked_mul(multiplier as u128)
         .ok_or(CurveError::Overflow)?
-        .checked_div(bps_denom)
+        .checked_div(BPS_DENOMINATOR)
         .ok_or(CurveError::DivisionByZero)?;
 
     Ok(adjusted)

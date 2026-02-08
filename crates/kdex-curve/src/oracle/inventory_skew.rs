@@ -225,6 +225,18 @@ fn power_fixed_point(base: u128, exp_num: u128, exp_denom: u128) -> Result<u128>
                 let sqrt_x = base.saturating_mul(10000).isqrt();
                 return checked_div(checked_mul(base, sqrt_x)?, 10000);
             }
+            12000 => {
+                // alpha = 1.2: x^1.2 using quadratic approximation
+                // For values near 1: x^1.2 ≈ 1 + 1.2(x-1) + 0.12(x-1)^2
+                let base_diff = base.saturating_sub(10000) as i128;
+                let linear_term = base_diff.saturating_mul(12000) / 10000;
+                let quadratic_term =
+                    base_diff.saturating_mul(base_diff).saturating_mul(12) / 100000000;
+                let result = 10000_i128
+                    .saturating_add(linear_term)
+                    .saturating_add(quadratic_term);
+                return Ok(result.max(0) as u128);
+            }
             10000 => {
                 // alpha = 1.0: x
                 return Ok(base);
