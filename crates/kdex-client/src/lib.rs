@@ -33,6 +33,9 @@ pub mod state;
 // PDA utilities
 pub mod pda;
 
+// Swap instruction account meta builder
+pub mod swap_ix;
+
 // Quote calculation for non-oracle curves
 pub mod quote;
 

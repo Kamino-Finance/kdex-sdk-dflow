@@ -38,6 +38,8 @@ pub struct Swap {
     pub source_token_program: solana_pubkey::Pubkey,
     /// Token program for the destination mint
     pub destination_token_program: solana_pubkey::Pubkey,
+    /// Instructions sysvar
+    pub instruction_sysvar: solana_pubkey::Pubkey,
     /// Optional pool token fees account for front ends - if not present, all fees are sent to the trading fees account
     pub source_token_host_fees_account: Option<solana_pubkey::Pubkey>,
     /// Optional Scope price feed account (required for Oracle based curves)
@@ -59,7 +61,7 @@ impl Swap {
         args: SwapInstructionArgs,
         remaining_accounts: &[solana_instruction::AccountMeta],
     ) -> solana_instruction::Instruction {
-        let mut accounts = Vec::with_capacity(17 + remaining_accounts.len());
+        let mut accounts = Vec::with_capacity(18 + remaining_accounts.len());
         accounts.push(solana_instruction::AccountMeta::new(self.signer, true));
         accounts.push(solana_instruction::AccountMeta::new(self.pool, false));
         accounts.push(solana_instruction::AccountMeta::new_readonly(
@@ -104,6 +106,10 @@ impl Swap {
         ));
         accounts.push(solana_instruction::AccountMeta::new_readonly(
             self.destination_token_program,
+            false,
+        ));
+        accounts.push(solana_instruction::AccountMeta::new_readonly(
+            self.instruction_sysvar,
             false,
         ));
         if let Some(source_token_host_fees_account) = self.source_token_host_fees_account {
@@ -203,10 +209,11 @@ impl SwapInstructionArgs {
 ///   10. `[writable]` destination_user_ata
 ///   11. `[]` source_token_program
 ///   12. `[]` destination_token_program
-///   13. `[writable, optional]` source_token_host_fees_account
-///   14. `[optional]` scope_price_feed
-///   15. `[]` event_authority
-///   16. `[]` program
+///   13. `[optional]` instruction_sysvar (default to `Sysvar1nstructions1111111111111111111111111`)
+///   14. `[writable, optional]` source_token_host_fees_account
+///   15. `[optional]` scope_price_feed
+///   16. `[]` event_authority
+///   17. `[]` program
 #[derive(Clone, Debug, Default)]
 pub struct SwapBuilder {
     signer: Option<solana_pubkey::Pubkey>,
@@ -222,6 +229,7 @@ pub struct SwapBuilder {
     destination_user_ata: Option<solana_pubkey::Pubkey>,
     source_token_program: Option<solana_pubkey::Pubkey>,
     destination_token_program: Option<solana_pubkey::Pubkey>,
+    instruction_sysvar: Option<solana_pubkey::Pubkey>,
     source_token_host_fees_account: Option<solana_pubkey::Pubkey>,
     scope_price_feed: Option<solana_pubkey::Pubkey>,
     event_authority: Option<solana_pubkey::Pubkey>,
@@ -317,6 +325,13 @@ impl SwapBuilder {
         self.destination_token_program = Some(destination_token_program);
         self
     }
+    /// `[optional account, default to 'Sysvar1nstructions1111111111111111111111111']`
+    /// Instructions sysvar
+    #[inline(always)]
+    pub fn instruction_sysvar(&mut self, instruction_sysvar: solana_pubkey::Pubkey) -> &mut Self {
+        self.instruction_sysvar = Some(instruction_sysvar);
+        self
+    }
     /// `[optional account]`
     /// Optional pool token fees account for front ends - if not present, all fees are sent to the trading fees account
     #[inline(always)]
@@ -398,6 +413,9 @@ impl SwapBuilder {
             destination_token_program: self
                 .destination_token_program
                 .expect("destination_token_program is not set"),
+            instruction_sysvar: self.instruction_sysvar.unwrap_or(solana_pubkey::pubkey!(
+                "Sysvar1nstructions1111111111111111111111111"
+            )),
             source_token_host_fees_account: self.source_token_host_fees_account,
             scope_price_feed: self.scope_price_feed,
             event_authority: self.event_authority.expect("event_authority is not set"),
@@ -442,6 +460,8 @@ pub struct SwapCpiAccounts<'a, 'b> {
     pub source_token_program: &'b solana_account_info::AccountInfo<'a>,
     /// Token program for the destination mint
     pub destination_token_program: &'b solana_account_info::AccountInfo<'a>,
+    /// Instructions sysvar
+    pub instruction_sysvar: &'b solana_account_info::AccountInfo<'a>,
     /// Optional pool token fees account for front ends - if not present, all fees are sent to the trading fees account
     pub source_token_host_fees_account: Option<&'b solana_account_info::AccountInfo<'a>>,
     /// Optional Scope price feed account (required for Oracle based curves)
@@ -482,6 +502,8 @@ pub struct SwapCpi<'a, 'b> {
     pub source_token_program: &'b solana_account_info::AccountInfo<'a>,
     /// Token program for the destination mint
     pub destination_token_program: &'b solana_account_info::AccountInfo<'a>,
+    /// Instructions sysvar
+    pub instruction_sysvar: &'b solana_account_info::AccountInfo<'a>,
     /// Optional pool token fees account for front ends - if not present, all fees are sent to the trading fees account
     pub source_token_host_fees_account: Option<&'b solana_account_info::AccountInfo<'a>>,
     /// Optional Scope price feed account (required for Oracle based curves)
@@ -515,6 +537,7 @@ impl<'a, 'b> SwapCpi<'a, 'b> {
             destination_user_ata: accounts.destination_user_ata,
             source_token_program: accounts.source_token_program,
             destination_token_program: accounts.destination_token_program,
+            instruction_sysvar: accounts.instruction_sysvar,
             source_token_host_fees_account: accounts.source_token_host_fees_account,
             scope_price_feed: accounts.scope_price_feed,
             event_authority: accounts.event_authority,
@@ -545,7 +568,7 @@ impl<'a, 'b> SwapCpi<'a, 'b> {
         signers_seeds: &[&[&[u8]]],
         remaining_accounts: &[(&'b solana_account_info::AccountInfo<'a>, bool, bool)],
     ) -> solana_program_error::ProgramResult {
-        let mut accounts = Vec::with_capacity(17 + remaining_accounts.len());
+        let mut accounts = Vec::with_capacity(18 + remaining_accounts.len());
         accounts.push(solana_instruction::AccountMeta::new(*self.signer.key, true));
         accounts.push(solana_instruction::AccountMeta::new(*self.pool.key, false));
         accounts.push(solana_instruction::AccountMeta::new_readonly(
@@ -590,6 +613,10 @@ impl<'a, 'b> SwapCpi<'a, 'b> {
         ));
         accounts.push(solana_instruction::AccountMeta::new_readonly(
             *self.destination_token_program.key,
+            false,
+        ));
+        accounts.push(solana_instruction::AccountMeta::new_readonly(
+            *self.instruction_sysvar.key,
             false,
         ));
         if let Some(source_token_host_fees_account) = self.source_token_host_fees_account {
@@ -638,7 +665,7 @@ impl<'a, 'b> SwapCpi<'a, 'b> {
             accounts,
             data,
         };
-        let mut account_infos = Vec::with_capacity(18 + remaining_accounts.len());
+        let mut account_infos = Vec::with_capacity(19 + remaining_accounts.len());
         account_infos.push(self.__program.clone());
         account_infos.push(self.signer.clone());
         account_infos.push(self.pool.clone());
@@ -653,6 +680,7 @@ impl<'a, 'b> SwapCpi<'a, 'b> {
         account_infos.push(self.destination_user_ata.clone());
         account_infos.push(self.source_token_program.clone());
         account_infos.push(self.destination_token_program.clone());
+        account_infos.push(self.instruction_sysvar.clone());
         if let Some(source_token_host_fees_account) = self.source_token_host_fees_account {
             account_infos.push(source_token_host_fees_account.clone());
         }
@@ -690,10 +718,11 @@ impl<'a, 'b> SwapCpi<'a, 'b> {
 ///   10. `[writable]` destination_user_ata
 ///   11. `[]` source_token_program
 ///   12. `[]` destination_token_program
-///   13. `[writable, optional]` source_token_host_fees_account
-///   14. `[optional]` scope_price_feed
-///   15. `[]` event_authority
-///   16. `[]` program
+///   13. `[]` instruction_sysvar
+///   14. `[writable, optional]` source_token_host_fees_account
+///   15. `[optional]` scope_price_feed
+///   16. `[]` event_authority
+///   17. `[]` program
 #[derive(Clone, Debug)]
 pub struct SwapCpiBuilder<'a, 'b> {
     instruction: Box<SwapCpiBuilderInstruction<'a, 'b>>,
@@ -716,6 +745,7 @@ impl<'a, 'b> SwapCpiBuilder<'a, 'b> {
             destination_user_ata: None,
             source_token_program: None,
             destination_token_program: None,
+            instruction_sysvar: None,
             source_token_host_fees_account: None,
             scope_price_feed: None,
             event_authority: None,
@@ -827,6 +857,15 @@ impl<'a, 'b> SwapCpiBuilder<'a, 'b> {
         destination_token_program: &'b solana_account_info::AccountInfo<'a>,
     ) -> &mut Self {
         self.instruction.destination_token_program = Some(destination_token_program);
+        self
+    }
+    /// Instructions sysvar
+    #[inline(always)]
+    pub fn instruction_sysvar(
+        &mut self,
+        instruction_sysvar: &'b solana_account_info::AccountInfo<'a>,
+    ) -> &mut Self {
+        self.instruction.instruction_sysvar = Some(instruction_sysvar);
         self
     }
     /// `[optional account]`
@@ -977,6 +1016,11 @@ impl<'a, 'b> SwapCpiBuilder<'a, 'b> {
                 .destination_token_program
                 .expect("destination_token_program is not set"),
 
+            instruction_sysvar: self
+                .instruction
+                .instruction_sysvar
+                .expect("instruction_sysvar is not set"),
+
             source_token_host_fees_account: self.instruction.source_token_host_fees_account,
 
             scope_price_feed: self.instruction.scope_price_feed,
@@ -1012,6 +1056,7 @@ struct SwapCpiBuilderInstruction<'a, 'b> {
     destination_user_ata: Option<&'b solana_account_info::AccountInfo<'a>>,
     source_token_program: Option<&'b solana_account_info::AccountInfo<'a>>,
     destination_token_program: Option<&'b solana_account_info::AccountInfo<'a>>,
+    instruction_sysvar: Option<&'b solana_account_info::AccountInfo<'a>>,
     source_token_host_fees_account: Option<&'b solana_account_info::AccountInfo<'a>>,
     scope_price_feed: Option<&'b solana_account_info::AccountInfo<'a>>,
     event_authority: Option<&'b solana_account_info::AccountInfo<'a>>,

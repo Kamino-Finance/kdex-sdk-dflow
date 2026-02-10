@@ -8,7 +8,7 @@ use anyhow::Result;
 use kdex_client::generated::accounts::SwapPool;
 use kdex_client::state::SwapState;
 use kdex_client::{CurveType, TradeDirection, KDEX_ID};
-use solana_sdk::{instruction::AccountMeta, pubkey::Pubkey};
+use solana_sdk::pubkey::Pubkey;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -827,25 +827,23 @@ impl Amm for KDEXAmm {
         };
 
         // Build account metas according to KDEX's Swap instruction
-        let account_metas = vec![
-            AccountMeta::new_readonly(*token_transfer_authority, true),
-            AccountMeta::new(self.pool_key, false),
-            AccountMeta::new_readonly(self.pool.swap_curve, false),
-            AccountMeta::new_readonly(self.pool.pool_authority, false),
-            AccountMeta::new_readonly(*source_mint, false),
-            AccountMeta::new_readonly(*destination_mint, false),
-            AccountMeta::new(source_vault, false),
-            AccountMeta::new(destination_vault, false),
-            AccountMeta::new(source_fees_vault, false),
-            AccountMeta::new(*source_token_account, false),
-            AccountMeta::new(*destination_token_account, false),
-            AccountMeta::new_readonly(source_token_program, false),
-            AccountMeta::new_readonly(destination_token_program, false),
-            // source_token_host_fees_account - passing program_id means None
-            AccountMeta::new(self.program_id, false),
-            // scope_price_feed - real address for oracle curves, program_id (None) for others
-            AccountMeta::new_readonly(scope_price_feed, false),
-        ];
+        let account_metas = kdex_client::swap_ix::build_swap_account_metas(
+            *token_transfer_authority,
+            self.pool_key,
+            self.pool.swap_curve,
+            self.pool.pool_authority,
+            *source_mint,
+            *destination_mint,
+            source_vault,
+            destination_vault,
+            source_fees_vault,
+            *source_token_account,
+            *destination_token_account,
+            source_token_program,
+            destination_token_program,
+            self.program_id,
+            scope_price_feed,
+        );
 
         Ok(SwapAndAccountMetas {
             swap: Swap::Placeholder,
