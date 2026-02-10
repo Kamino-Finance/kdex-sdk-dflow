@@ -217,8 +217,10 @@ fn run_pool_tests() -> anyhow::Result<()> {
 
             match result {
                 Ok(quote) => {
-                    // Note: DFlow Quote only has in_amount and out_amount
-                    println!("    {} in -> {} out", amount, quote.out_amount);
+                    println!(
+                        "    {} in -> {} out (requested {})",
+                        quote.in_amount, quote.out_amount, amount
+                    );
                 }
                 Err(e) => {
                     println!("    Quote failed for amount {}: {}", amount, e);
@@ -251,7 +253,10 @@ fn run_pool_tests() -> anyhow::Result<()> {
 
         match result {
             Ok(quote) => {
-                println!("    {} in -> {} out", reverse_amount, quote.out_amount);
+                println!(
+                    "    {} in -> {} out (requested {})",
+                    quote.in_amount, quote.out_amount, reverse_amount
+                );
             }
             Err(e) => {
                 println!("    Quote failed: {}", e);
@@ -285,8 +290,8 @@ fn run_pool_tests() -> anyhow::Result<()> {
                 // For AMM curves, the math naturally limits output
                 // For oracle curves, should return InsufficientLiquidity error
                 println!(
-                    "    Quote returned: {} in -> {} out (output may be capped by liquidity)",
-                    excessive_amount, quote.out_amount
+                    "    Quote returned: {} in -> {} out (requested {})",
+                    quote.in_amount, quote.out_amount, excessive_amount
                 );
             }
             Err(e) => {

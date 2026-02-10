@@ -259,26 +259,27 @@ impl KDEXAmm {
                     self.token_b_decimals,
                 ) {
                     Ok((_src, dest, _fees)) => (quote_params.amount, dest),
-                    Err(crate::error::SdkError::InsufficientLiquidity { .. }) => {
-                        search_max_input(quote_params.amount, |amt| {
-                            match oracle::calculate_constant_spread_quote(
-                                &self.pool.fees,
-                                amt,
-                                destination_vault_amount,
-                                trade_direction,
-                                &curve_account.data,
-                                scope_account,
-                                self.token_a_decimals,
-                                self.token_b_decimals,
-                            ) {
-                                Ok((_src, dest, _fees)) => SwapFit::Fits(dest),
-                                Err(crate::error::SdkError::InsufficientLiquidity { .. }) => {
-                                    SwapFit::ExceedsVault
-                                }
-                                Err(_) => SwapFit::OtherError,
+                    Err(crate::error::SdkError::InsufficientLiquidity {
+                        required,
+                        available,
+                    }) => search_max_input(quote_params.amount, required, available, |amt| {
+                        match oracle::calculate_constant_spread_quote(
+                            &self.pool.fees,
+                            amt,
+                            destination_vault_amount,
+                            trade_direction,
+                            &curve_account.data,
+                            scope_account,
+                            self.token_a_decimals,
+                            self.token_b_decimals,
+                        ) {
+                            Ok((_src, dest, _fees)) => SwapFit::Fits(dest),
+                            Err(crate::error::SdkError::InsufficientLiquidity { .. }) => {
+                                SwapFit::ExceedsVault
                             }
-                        })
-                    }
+                            Err(_) => SwapFit::OtherError,
+                        }
+                    }),
                     Err(e) => return Err(e.into()),
                 }
             }
@@ -306,27 +307,28 @@ impl KDEXAmm {
                     self.token_b_decimals,
                 ) {
                     Ok((_src, dest, _fees)) => (quote_params.amount, dest),
-                    Err(crate::error::SdkError::InsufficientLiquidity { .. }) => {
-                        search_max_input(quote_params.amount, |amt| {
-                            match oracle::calculate_inventory_skew_quote(
-                                &self.pool.fees,
-                                amt,
-                                source_vault_amount,
-                                destination_vault_amount,
-                                trade_direction,
-                                &curve_account.data,
-                                scope_account,
-                                self.token_a_decimals,
-                                self.token_b_decimals,
-                            ) {
-                                Ok((_src, dest, _fees)) => SwapFit::Fits(dest),
-                                Err(crate::error::SdkError::InsufficientLiquidity { .. }) => {
-                                    SwapFit::ExceedsVault
-                                }
-                                Err(_) => SwapFit::OtherError,
+                    Err(crate::error::SdkError::InsufficientLiquidity {
+                        required,
+                        available,
+                    }) => search_max_input(quote_params.amount, required, available, |amt| {
+                        match oracle::calculate_inventory_skew_quote(
+                            &self.pool.fees,
+                            amt,
+                            source_vault_amount,
+                            destination_vault_amount,
+                            trade_direction,
+                            &curve_account.data,
+                            scope_account,
+                            self.token_a_decimals,
+                            self.token_b_decimals,
+                        ) {
+                            Ok((_src, dest, _fees)) => SwapFit::Fits(dest),
+                            Err(crate::error::SdkError::InsufficientLiquidity { .. }) => {
+                                SwapFit::ExceedsVault
                             }
-                        })
-                    }
+                            Err(_) => SwapFit::OtherError,
+                        }
+                    }),
                     Err(e) => return Err(e.into()),
                 }
             }
@@ -428,10 +430,27 @@ enum SwapFit {
 }
 
 /// Binary search for the maximum input amount whose swap output fits within
-/// the destination vault. Returns (consumed_input, output_amount).
-fn search_max_input(amount_in: u64, try_swap: impl Fn(u64) -> SwapFit) -> (u64, u64) {
-    let mut lo: u64 = 0;
-    let mut hi: u64 = amount_in.saturating_sub(1);
+/// the destination vault. Uses a proportional estimate to seed the search,
+/// keeping iterations to ~2-5 in practice instead of 64.
+/// Returns (consumed_input, output_amount).
+fn search_max_input(
+    amount_in: u64,
+    required: u64,
+    available: u64,
+    try_swap: impl Fn(u64) -> SwapFit,
+) -> (u64, u64) {
+    // Proportional estimate: the exact answer for linear curves, close for non-linear
+    let estimate = (amount_in as u128)
+        .saturating_mul(available as u128)
+        .checked_div(required as u128)
+        .unwrap_or(0) as u64;
+
+    // Seed the search around the estimate with a small margin
+    let margin = estimate / 100; // 1% margin
+    let mut lo: u64 = estimate.saturating_sub(margin);
+    let mut hi: u64 = estimate
+        .saturating_add(margin)
+        .min(amount_in.saturating_sub(1));
     let mut best = (0u64, 0u64);
 
     while lo <= hi {
@@ -622,28 +641,30 @@ impl Amm for KDEXAmm {
                                 self.token_b_decimals,
                             ) {
                                 Ok((_src, dest, _fees)) => (quote_params.amount, dest),
-                                Err(crate::error::SdkError::InsufficientLiquidity { .. }) => {
-                                    search_max_input(quote_params.amount, |amt| {
-                                        match oracle::calculate_constant_spread_quote(
-                                            &self.pool.fees,
-                                            amt,
-                                            destination_vault_amount,
-                                            trade_direction,
-                                            curve_data,
-                                            scope_account,
-                                            self.token_a_decimals,
-                                            self.token_b_decimals,
-                                        ) {
-                                            Ok((_src, dest, _fees)) => SwapFit::Fits(dest),
-                                            Err(
-                                                crate::error::SdkError::InsufficientLiquidity {
-                                                    ..
-                                                },
-                                            ) => SwapFit::ExceedsVault,
-                                            Err(_) => SwapFit::OtherError,
-                                        }
-                                    })
-                                }
+                                Err(crate::error::SdkError::InsufficientLiquidity {
+                                    required,
+                                    available,
+                                }) => search_max_input(
+                                    quote_params.amount,
+                                    required,
+                                    available,
+                                    |amt| match oracle::calculate_constant_spread_quote(
+                                        &self.pool.fees,
+                                        amt,
+                                        destination_vault_amount,
+                                        trade_direction,
+                                        curve_data,
+                                        scope_account,
+                                        self.token_a_decimals,
+                                        self.token_b_decimals,
+                                    ) {
+                                        Ok((_src, dest, _fees)) => SwapFit::Fits(dest),
+                                        Err(crate::error::SdkError::InsufficientLiquidity {
+                                            ..
+                                        }) => SwapFit::ExceedsVault,
+                                        Err(_) => SwapFit::OtherError,
+                                    },
+                                ),
                                 Err(e) => return Err(e.into()),
                             }
                         }
@@ -660,29 +681,31 @@ impl Amm for KDEXAmm {
                                 self.token_b_decimals,
                             ) {
                                 Ok((_src, dest, _fees)) => (quote_params.amount, dest),
-                                Err(crate::error::SdkError::InsufficientLiquidity { .. }) => {
-                                    search_max_input(quote_params.amount, |amt| {
-                                        match oracle::calculate_inventory_skew_quote(
-                                            &self.pool.fees,
-                                            amt,
-                                            source_vault_amount,
-                                            destination_vault_amount,
-                                            trade_direction,
-                                            curve_data,
-                                            scope_account,
-                                            self.token_a_decimals,
-                                            self.token_b_decimals,
-                                        ) {
-                                            Ok((_src, dest, _fees)) => SwapFit::Fits(dest),
-                                            Err(
-                                                crate::error::SdkError::InsufficientLiquidity {
-                                                    ..
-                                                },
-                                            ) => SwapFit::ExceedsVault,
-                                            Err(_) => SwapFit::OtherError,
-                                        }
-                                    })
-                                }
+                                Err(crate::error::SdkError::InsufficientLiquidity {
+                                    required,
+                                    available,
+                                }) => search_max_input(
+                                    quote_params.amount,
+                                    required,
+                                    available,
+                                    |amt| match oracle::calculate_inventory_skew_quote(
+                                        &self.pool.fees,
+                                        amt,
+                                        source_vault_amount,
+                                        destination_vault_amount,
+                                        trade_direction,
+                                        curve_data,
+                                        scope_account,
+                                        self.token_a_decimals,
+                                        self.token_b_decimals,
+                                    ) {
+                                        Ok((_src, dest, _fees)) => SwapFit::Fits(dest),
+                                        Err(crate::error::SdkError::InsufficientLiquidity {
+                                            ..
+                                        }) => SwapFit::ExceedsVault,
+                                        Err(_) => SwapFit::OtherError,
+                                    },
+                                ),
                                 Err(e) => return Err(e.into()),
                             }
                         }
@@ -747,24 +770,28 @@ impl Amm for KDEXAmm {
                 in_amount: actual_amount_in,
                 out_amount: result.destination_amount_swapped,
             }),
-            Err(kdex_client::quote::QuoteError::InsufficientLiquidity { .. }) => {
-                let (consumed, capped_out) = search_max_input(actual_amount_in, |amt| {
-                    match kdex_client::quote::calculate_quote(
-                        self.pool.curve_type(),
-                        &self.pool.fees,
-                        amt,
-                        source_amount,
-                        destination_amount,
-                        trade_direction,
-                        curve_data,
-                    ) {
-                        Ok(result) => SwapFit::Fits(result.destination_amount_swapped),
-                        Err(kdex_client::quote::QuoteError::InsufficientLiquidity { .. }) => {
-                            SwapFit::ExceedsVault
+            Err(kdex_client::quote::QuoteError::InsufficientLiquidity {
+                required,
+                available,
+            }) => {
+                let (consumed, capped_out) =
+                    search_max_input(actual_amount_in, required, available, |amt| {
+                        match kdex_client::quote::calculate_quote(
+                            self.pool.curve_type(),
+                            &self.pool.fees,
+                            amt,
+                            source_amount,
+                            destination_amount,
+                            trade_direction,
+                            curve_data,
+                        ) {
+                            Ok(result) => SwapFit::Fits(result.destination_amount_swapped),
+                            Err(kdex_client::quote::QuoteError::InsufficientLiquidity {
+                                ..
+                            }) => SwapFit::ExceedsVault,
+                            Err(_) => SwapFit::OtherError,
                         }
-                        Err(_) => SwapFit::OtherError,
-                    }
-                });
+                    });
                 Ok(Quote {
                     in_amount: consumed,
                     out_amount: capped_out,
