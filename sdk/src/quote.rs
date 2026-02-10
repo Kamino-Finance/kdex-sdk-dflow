@@ -101,8 +101,12 @@ impl<'a> QuoteCalculator<'a> {
                 }
             }
             CurveType::ConstantSpreadOracle => {
-                // Need to fetch curve account and Scope price
+                // Need to fetch curve account, Scope price, and mint decimals
                 let curve_account = self.client.get_account(&pool.swap_curve).await?;
+                let token_a_mint_account = self.client.get_account(&pool.token_a_mint).await?;
+                let token_b_mint_account = self.client.get_account(&pool.token_b_mint).await?;
+                let token_a_decimals = *token_a_mint_account.data.get(44).unwrap_or(&0);
+                let token_b_decimals = *token_b_mint_account.data.get(44).unwrap_or(&0);
 
                 self.calculate_constant_spread_quote(
                     &pool.fees,
@@ -110,12 +114,18 @@ impl<'a> QuoteCalculator<'a> {
                     dest_vault_token.amount,
                     trade_direction,
                     &curve_account.data,
+                    token_a_decimals,
+                    token_b_decimals,
                 )
                 .await?
             }
             CurveType::InventorySkewOracle => {
-                // Need to fetch curve account and Scope price
+                // Need to fetch curve account, Scope price, and mint decimals
                 let curve_account = self.client.get_account(&pool.swap_curve).await?;
+                let token_a_mint_account = self.client.get_account(&pool.token_a_mint).await?;
+                let token_b_mint_account = self.client.get_account(&pool.token_b_mint).await?;
+                let token_a_decimals = *token_a_mint_account.data.get(44).unwrap_or(&0);
+                let token_b_decimals = *token_b_mint_account.data.get(44).unwrap_or(&0);
 
                 self.calculate_inventory_skew_quote(
                     &pool.fees,
@@ -124,6 +134,8 @@ impl<'a> QuoteCalculator<'a> {
                     dest_vault_token.amount,
                     trade_direction,
                     &curve_account.data,
+                    token_a_decimals,
+                    token_b_decimals,
                 )
                 .await?
             }
@@ -133,6 +145,7 @@ impl<'a> QuoteCalculator<'a> {
     }
 
     /// Calculate quote for ConstantSpreadOracle curve
+    #[allow(clippy::too_many_arguments)]
     async fn calculate_constant_spread_quote(
         &self,
         fees: &kdex_client::generated::types::Fees,
@@ -140,6 +153,8 @@ impl<'a> QuoteCalculator<'a> {
         destination_vault_amount: u64,
         trade_direction: TradeDirection,
         curve_data: &[u8],
+        token_a_decimals: u8,
+        token_b_decimals: u8,
     ) -> Result<Quote> {
         // Deserialize the full ConstantSpreadOracleCurve to access all parameters
         let mut data = curve_data;
@@ -159,6 +174,8 @@ impl<'a> QuoteCalculator<'a> {
                 trade_direction,
                 curve_data,
                 &scope_account,
+                token_a_decimals,
+                token_b_decimals,
             )
             .map_err(|e| anyhow!("Oracle quote calculation failed: {:?}", e))?;
 
@@ -170,6 +187,7 @@ impl<'a> QuoteCalculator<'a> {
     }
 
     /// Calculate quote for InventorySkewOracle curve
+    #[allow(clippy::too_many_arguments)]
     async fn calculate_inventory_skew_quote(
         &self,
         fees: &kdex_client::generated::types::Fees,
@@ -178,6 +196,8 @@ impl<'a> QuoteCalculator<'a> {
         destination_vault_amount: u64,
         trade_direction: TradeDirection,
         curve_data: &[u8],
+        token_a_decimals: u8,
+        token_b_decimals: u8,
     ) -> Result<Quote> {
         // Deserialize the full InventorySkewOracleCurve to access all parameters
         let mut data = curve_data;
@@ -198,6 +218,8 @@ impl<'a> QuoteCalculator<'a> {
                 trade_direction,
                 curve_data,
                 &scope_account,
+                token_a_decimals,
+                token_b_decimals,
             )
             .map_err(|e| anyhow!("Oracle quote calculation failed: {:?}", e))?;
 

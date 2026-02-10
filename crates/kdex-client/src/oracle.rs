@@ -66,7 +66,7 @@ pub type Result<T> = std::result::Result<T, OracleError>;
 ///
 /// # Errors
 /// * `InvalidOracleConfig` - If price index is out of bounds or account is invalid
-pub fn fetch_scope_price(price_feed_account: &Account, price_index: u16) -> Result<(u64, i32)> {
+pub fn fetch_scope_price(price_feed_account: &Account, price_index: u16) -> Result<(u64, u64)> {
     // Validate price index is within bounds
     if (price_index as usize) >= scope_types::MAX_ENTRIES {
         return Err(OracleError::InvalidOracleConfig(format!(
@@ -116,7 +116,7 @@ pub fn fetch_scope_price(price_feed_account: &Account, price_index: u16) -> Resu
     // The actual on-chain transaction will validate the price age
 
     // Return price value and exponent (convert u64 exp to i32)
-    Ok((dated_price.price.value, dated_price.price.exp as i32))
+    Ok((dated_price.price.value, dated_price.price.exp))
 }
 
 /// Fetches and multiplies prices from a Scope oracle price chain
@@ -130,7 +130,7 @@ pub fn fetch_scope_price(price_feed_account: &Account, price_index: u16) -> Resu
 pub fn fetch_scope_price_chain(
     price_feed_account: &Account,
     price_chain: &[u16; 4],
-) -> Result<(u128, i32)> {
+) -> Result<(u128, u64)> {
     // Validate account owner is the Scope program
     if price_feed_account.owner != scope_types::id() {
         return Err(OracleError::InvalidOracleConfig(format!(
@@ -188,6 +188,7 @@ pub fn fetch_scope_price_chain(
 ///
 /// # Returns
 /// * Quote with in_amount, out_amount, and total_fees
+#[allow(clippy::too_many_arguments)]
 pub fn calculate_constant_spread_quote(
     fees: &Fees,
     amount_in: u64,
@@ -195,6 +196,8 @@ pub fn calculate_constant_spread_quote(
     trade_direction: TradeDirection,
     curve_data: &[u8],
     scope_price_feed_account: &Account,
+    token_a_decimals: u8,
+    token_b_decimals: u8,
 ) -> Result<(u64, u64, u64)> {
     // Deserialize the full ConstantSpreadOracleCurve to access all parameters
     let mut data = curve_data;
@@ -204,6 +207,19 @@ pub fn calculate_constant_spread_quote(
     // Fetch Scope price chain
     let (price_value, price_exp) =
         fetch_scope_price_chain(scope_price_feed_account, &curve.price_chain)?;
+
+    // Adjust price exponent for token decimal difference (same as on-chain swap.rs)
+    // The oracle reports human-readable prices (e.g., 81.2 USDC per SOL).
+    // For raw-to-raw conversion: price_exp' = price_exp + dec_A - dec_B
+    let price_exp = if token_a_decimals >= token_b_decimals {
+        price_exp
+            .checked_add(u64::from(token_a_decimals.abs_diff(token_b_decimals)))
+            .ok_or_else(|| OracleError::CurveError("Price exponent overflow".into()))?
+    } else {
+        price_exp
+            .checked_sub(u64::from(token_b_decimals.abs_diff(token_a_decimals)))
+            .ok_or_else(|| OracleError::CurveError("Price exponent underflow".into()))?
+    };
 
     // Convert to curve fees for calculation
     let curve_fees = to_curve_fees(fees);
@@ -222,16 +238,22 @@ pub fn calculate_constant_spread_quote(
         .checked_sub(total_fees)
         .ok_or_else(|| OracleError::CurveError("Amount too small to cover fees".into()))?;
 
-    // Apply price offset (same as on-chain swap.rs)
-    let adjusted_price =
-        kdex_curve::oracle::apply_price_offset(price_value, curve.price_offset_bps)
-            .map_err(|e| OracleError::CurveError(e.to_string()))?;
+    // Apply price offset: negate because with B-per-A pricing the offset direction flips
+    // (negative offset = make token B cheaper = increase B/A price)
+    let adjusted_price = kdex_curve::oracle::apply_price_offset(
+        price_value,
+        curve
+            .price_offset_bps
+            .checked_neg()
+            .ok_or_else(|| OracleError::CurveError("Price offset negate overflow".into()))?,
+    )
+    .map_err(|e| OracleError::CurveError(e.to_string()))?;
 
     // Calculate swap using ConstantSpread logic from kdex-curve
     let swap_result = kdex_curve::oracle::constant_spread_swap(
         source_amount_less_fees,
         adjusted_price,
-        price_exp as u64,
+        price_exp,
         curve.bps_from_oracle,
         trade_direction,
     )
@@ -267,6 +289,7 @@ pub fn calculate_constant_spread_quote(
 ///
 /// # Returns
 /// * Quote with in_amount, out_amount, and total_fees
+#[allow(clippy::too_many_arguments)]
 pub fn calculate_inventory_skew_quote(
     fees: &Fees,
     amount_in: u64,
@@ -275,6 +298,8 @@ pub fn calculate_inventory_skew_quote(
     trade_direction: TradeDirection,
     curve_data: &[u8],
     scope_price_feed_account: &Account,
+    token_a_decimals: u8,
+    token_b_decimals: u8,
 ) -> Result<(u64, u64, u64)> {
     // Deserialize the full InventorySkewOracleCurve to access all parameters
     let mut data = curve_data;
@@ -284,6 +309,19 @@ pub fn calculate_inventory_skew_quote(
     // Fetch Scope price chain
     let (price_value, price_exp) =
         fetch_scope_price_chain(scope_price_feed_account, &curve.price_chain)?;
+
+    // Adjust price exponent for token decimal difference (same as on-chain swap.rs)
+    // The oracle reports human-readable prices (e.g., 81.2 USDC per SOL).
+    // For raw-to-raw conversion: price_exp' = price_exp + dec_A - dec_B
+    let price_exp = if token_a_decimals >= token_b_decimals {
+        price_exp
+            .checked_add(u64::from(token_a_decimals.abs_diff(token_b_decimals)))
+            .ok_or_else(|| OracleError::CurveError("Price exponent overflow".into()))?
+    } else {
+        price_exp
+            .checked_sub(u64::from(token_b_decimals.abs_diff(token_a_decimals)))
+            .ok_or_else(|| OracleError::CurveError("Price exponent underflow".into()))?
+    };
 
     // Convert to curve fees for calculation
     let curve_fees = to_curve_fees(fees);
@@ -313,17 +351,23 @@ pub fn calculate_inventory_skew_quote(
         curve.alpha,
     );
 
-    // Apply price offset (same as on-chain swap.rs)
-    let adjusted_price =
-        kdex_curve::oracle::apply_price_offset(price_value, curve.price_offset_bps)
-            .map_err(|e| OracleError::CurveError(e.to_string()))?;
+    // Apply price offset: negate because with B-per-A pricing the offset direction flips
+    // (negative offset = make token B cheaper = increase B/A price)
+    let adjusted_price = kdex_curve::oracle::apply_price_offset(
+        price_value,
+        curve
+            .price_offset_bps
+            .checked_neg()
+            .ok_or_else(|| OracleError::CurveError("Price offset negate overflow".into()))?,
+    )
+    .map_err(|e| OracleError::CurveError(e.to_string()))?;
 
     // Calculate ratios using the common helper from kdex-curve
     let (current_inventory_ratio, swap_size_ratio) =
         kdex_curve::oracle::inventory_skew::calculate_ratios(
             source_amount_less_fees,
             adjusted_price,
-            price_exp as u64,
+            price_exp,
             trade_direction,
             source_vault_amount as u128,
             destination_vault_amount as u128,
@@ -334,7 +378,7 @@ pub fn calculate_inventory_skew_quote(
     let swap_result = kdex_curve::oracle::inventory_skew_swap(
         source_amount_less_fees,
         adjusted_price,
-        price_exp as u64,
+        price_exp,
         trade_direction,
         current_inventory_ratio,
         swap_size_ratio,

@@ -12,7 +12,7 @@ use solana_sdk::account::Account;
 pub use kdex_client::TradeDirection as ReexportedTradeDirection;
 
 /// Fetches a single Scope oracle price from the price feed account
-pub fn fetch_scope_price(price_feed_account: &Account, price_index: u16) -> Result<(u64, i32)> {
+pub fn fetch_scope_price(price_feed_account: &Account, price_index: u16) -> Result<(u64, u64)> {
     kdex_client::oracle::fetch_scope_price(price_feed_account, price_index)
         .map_err(oracle_error_to_sdk_error)
 }
@@ -21,12 +21,13 @@ pub fn fetch_scope_price(price_feed_account: &Account, price_index: u16) -> Resu
 pub fn fetch_scope_price_chain(
     price_feed_account: &Account,
     price_chain: &[u16; 4],
-) -> Result<(u128, i32)> {
+) -> Result<(u128, u64)> {
     kdex_client::oracle::fetch_scope_price_chain(price_feed_account, price_chain)
         .map_err(oracle_error_to_sdk_error)
 }
 
 /// Calculate quote for ConstantSpreadOracle curve
+#[allow(clippy::too_many_arguments)]
 pub fn calculate_constant_spread_quote(
     fees: &Fees,
     amount_in: u64,
@@ -34,6 +35,8 @@ pub fn calculate_constant_spread_quote(
     trade_direction: TradeDirection,
     curve_data: &[u8],
     scope_price_feed_account: &Account,
+    token_a_decimals: u8,
+    token_b_decimals: u8,
 ) -> Result<(u64, u64, u64)> {
     kdex_client::oracle::calculate_constant_spread_quote(
         fees,
@@ -42,11 +45,14 @@ pub fn calculate_constant_spread_quote(
         trade_direction,
         curve_data,
         scope_price_feed_account,
+        token_a_decimals,
+        token_b_decimals,
     )
     .map_err(oracle_error_to_sdk_error)
 }
 
 /// Calculate quote for InventorySkewOracle curve
+#[allow(clippy::too_many_arguments)]
 pub fn calculate_inventory_skew_quote(
     fees: &Fees,
     amount_in: u64,
@@ -55,6 +61,8 @@ pub fn calculate_inventory_skew_quote(
     trade_direction: TradeDirection,
     curve_data: &[u8],
     scope_price_feed_account: &Account,
+    token_a_decimals: u8,
+    token_b_decimals: u8,
 ) -> Result<(u64, u64, u64)> {
     kdex_client::oracle::calculate_inventory_skew_quote(
         fees,
@@ -64,6 +72,8 @@ pub fn calculate_inventory_skew_quote(
         trade_direction,
         curve_data,
         scope_price_feed_account,
+        token_a_decimals,
+        token_b_decimals,
     )
     .map_err(oracle_error_to_sdk_error)
 }

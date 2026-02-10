@@ -81,6 +81,10 @@ pub struct KDEXAmm {
     /// Scope price feed accounts (for oracle curves, cached during update())
     /// Keyed by Scope feed pubkey to support multiple oracle accounts
     scope_price_feeds: HashMap<Pubkey, solana_sdk::account::Account>,
+    /// Token A decimals (populated from mint account during update)
+    token_a_decimals: u8,
+    /// Token B decimals (populated from mint account during update)
+    token_b_decimals: u8,
 }
 
 impl KDEXAmm {
@@ -101,6 +105,8 @@ impl KDEXAmm {
             account_hashes: HashMap::new(),
             curve_account_data: None,
             scope_price_feeds: HashMap::new(),
+            token_a_decimals: 0,
+            token_b_decimals: 0,
         })
     }
 
@@ -133,6 +139,8 @@ impl KDEXAmm {
             account_hashes: HashMap::new(),
             curve_account_data: None,
             scope_price_feeds: HashMap::new(),
+            token_a_decimals: 0,
+            token_b_decimals: 0,
         })
     }
 
@@ -247,6 +255,8 @@ impl KDEXAmm {
                     trade_direction,
                     &curve_account.data,
                     scope_account,
+                    self.token_a_decimals,
+                    self.token_b_decimals,
                 )?
             }
             CurveType::InventorySkewOracle => {
@@ -269,6 +279,8 @@ impl KDEXAmm {
                     trade_direction,
                     &curve_account.data,
                     scope_account,
+                    self.token_a_decimals,
+                    self.token_b_decimals,
                 )?
             }
             _ => anyhow::bail!(
@@ -331,6 +343,18 @@ impl KDEXAmm {
             }
         }
 
+        // Update token decimals from mint accounts (decimals never change, no hash check needed)
+        if let Some(mint_account) = accounts_map.get(&self.pool.token_a_mint) {
+            if mint_account.data.len() > 44 {
+                self.token_a_decimals = mint_account.data[44];
+            }
+        }
+        if let Some(mint_account) = accounts_map.get(&self.pool.token_b_mint) {
+            if mint_account.data.len() > 44 {
+                self.token_b_decimals = mint_account.data[44];
+            }
+        }
+
         // Check curve account
         if let Some(curve_account) = accounts_map.get(&self.pool.swap_curve) {
             let new_hash = compute_hash(curve_account);
@@ -369,6 +393,8 @@ impl Amm for KDEXAmm {
             self.pool.token_a_vault,
             self.pool.token_b_vault,
             self.pool.swap_curve,
+            self.pool.token_a_mint,
+            self.pool.token_b_mint,
         ];
 
         // For oracle curves, include Scope price feed if we can extract it
@@ -414,6 +440,20 @@ impl Amm for KDEXAmm {
         } else {
             None
         };
+
+        // Update token decimals from mint accounts
+        // SPL Token Mint layout: mint_authority(36) + supply(8) + decimals(1)
+        // Decimals byte is at offset 44 for both SPL Token and Token-2022
+        if let Some(mint_account) = accounts_map.get(&self.pool.token_a_mint) {
+            if mint_account.data.len() > 44 {
+                self.token_a_decimals = mint_account.data[44];
+            }
+        }
+        if let Some(mint_account) = accounts_map.get(&self.pool.token_b_mint) {
+            if mint_account.data.len() > 44 {
+                self.token_b_decimals = mint_account.data[44];
+            }
+        }
 
         // Update curve data
         if let Some(curve_account) = accounts_map.get(&self.pool.swap_curve) {
@@ -486,6 +526,8 @@ impl Amm for KDEXAmm {
                             trade_direction,
                             curve_data,
                             scope_account,
+                            self.token_a_decimals,
+                            self.token_b_decimals,
                         )?,
                         CurveType::InventorySkewOracle => oracle::calculate_inventory_skew_quote(
                             &self.pool.fees,
@@ -495,6 +537,8 @@ impl Amm for KDEXAmm {
                             trade_direction,
                             curve_data,
                             scope_account,
+                            self.token_a_decimals,
+                            self.token_b_decimals,
                         )?,
                         _ => unreachable!(),
                     };

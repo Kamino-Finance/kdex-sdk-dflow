@@ -25,7 +25,7 @@ use solana_sdk::account::Account;
 ///
 /// # Errors
 /// * `InvalidOracleConfig` - If price index is out of bounds or account is invalid
-pub fn fetch_scope_price(price_feed_account: &Account, price_index: u16) -> Result<(u64, i32)> {
+pub fn fetch_scope_price(price_feed_account: &Account, price_index: u16) -> Result<(u64, u64)> {
     kdex_client::oracle::fetch_scope_price(price_feed_account, price_index)
         .map_err(oracle_error_to_sdk_error)
 }
@@ -41,7 +41,7 @@ pub fn fetch_scope_price(price_feed_account: &Account, price_index: u16) -> Resu
 pub fn fetch_scope_price_chain(
     price_feed_account: &Account,
     price_chain: &[u16; 4],
-) -> Result<(u128, i32)> {
+) -> Result<(u128, u64)> {
     kdex_client::oracle::fetch_scope_price_chain(price_feed_account, price_chain)
         .map_err(oracle_error_to_sdk_error)
 }
@@ -57,9 +57,12 @@ pub fn fetch_scope_price_chain(
 /// * `trade_direction` - Direction of the trade
 /// * `curve_data` - Raw curve account data
 /// * `scope_price_feed_account` - Scope oracle account
+/// * `token_a_decimals` - Decimals of token A mint
+/// * `token_b_decimals` - Decimals of token B mint
 ///
 /// # Returns
 /// * Quote with in_amount, out_amount, and total_fees
+#[allow(clippy::too_many_arguments)]
 pub fn calculate_constant_spread_quote(
     fees: &Fees,
     amount_in: u64,
@@ -67,6 +70,8 @@ pub fn calculate_constant_spread_quote(
     trade_direction: TradeDirection,
     curve_data: &[u8],
     scope_price_feed_account: &Account,
+    token_a_decimals: u8,
+    token_b_decimals: u8,
 ) -> Result<(u64, u64, u64)> {
     kdex_client::oracle::calculate_constant_spread_quote(
         fees,
@@ -75,6 +80,8 @@ pub fn calculate_constant_spread_quote(
         trade_direction,
         curve_data,
         scope_price_feed_account,
+        token_a_decimals,
+        token_b_decimals,
     )
     .map_err(oracle_error_to_sdk_error)
 }
@@ -91,9 +98,12 @@ pub fn calculate_constant_spread_quote(
 /// * `trade_direction` - Direction of the trade
 /// * `curve_data` - Raw curve account data
 /// * `scope_price_feed_account` - Scope oracle account
+/// * `token_a_decimals` - Decimals of token A mint
+/// * `token_b_decimals` - Decimals of token B mint
 ///
 /// # Returns
 /// * Quote with in_amount, out_amount, and total_fees
+#[allow(clippy::too_many_arguments)]
 pub fn calculate_inventory_skew_quote(
     fees: &Fees,
     amount_in: u64,
@@ -102,6 +112,8 @@ pub fn calculate_inventory_skew_quote(
     trade_direction: TradeDirection,
     curve_data: &[u8],
     scope_price_feed_account: &Account,
+    token_a_decimals: u8,
+    token_b_decimals: u8,
 ) -> Result<(u64, u64, u64)> {
     kdex_client::oracle::calculate_inventory_skew_quote(
         fees,
@@ -111,6 +123,8 @@ pub fn calculate_inventory_skew_quote(
         trade_direction,
         curve_data,
         scope_price_feed_account,
+        token_a_decimals,
+        token_b_decimals,
     )
     .map_err(oracle_error_to_sdk_error)
 }
