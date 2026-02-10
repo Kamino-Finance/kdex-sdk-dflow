@@ -235,7 +235,7 @@ impl KDEXAmm {
         };
 
         // Calculate quote based on curve type
-        let (_in_amount, out_amount, _total_fees) = match self.pool.curve_type() {
+        let (in_amount, out_amount) = match self.pool.curve_type() {
             CurveType::ConstantSpreadOracle => {
                 // Extract scope_price_feed from curve data
                 let scope_price_feed = solana_sdk::pubkey::Pubkey::try_from(
@@ -248,7 +248,7 @@ impl KDEXAmm {
                     anyhow::anyhow!("Scope price feed account not found: {}", scope_price_feed)
                 })?;
 
-                oracle::calculate_constant_spread_quote(
+                match oracle::calculate_constant_spread_quote(
                     &self.pool.fees,
                     quote_params.amount,
                     destination_vault_amount,
@@ -257,7 +257,14 @@ impl KDEXAmm {
                     scope_account,
                     self.token_a_decimals,
                     self.token_b_decimals,
-                )?
+                ) {
+                    Ok((_src, dest, _fees)) => (quote_params.amount, dest),
+                    Err(crate::error::SdkError::InsufficientLiquidity {
+                        required,
+                        available,
+                    }) => cap_at_liquidity(quote_params.amount, required, available),
+                    Err(e) => return Err(e.into()),
+                }
             }
             CurveType::InventorySkewOracle => {
                 // Extract scope_price_feed from curve data
@@ -271,7 +278,7 @@ impl KDEXAmm {
                     anyhow::anyhow!("Scope price feed account not found: {}", scope_price_feed)
                 })?;
 
-                oracle::calculate_inventory_skew_quote(
+                match oracle::calculate_inventory_skew_quote(
                     &self.pool.fees,
                     quote_params.amount,
                     source_vault_amount,
@@ -281,7 +288,14 @@ impl KDEXAmm {
                     scope_account,
                     self.token_a_decimals,
                     self.token_b_decimals,
-                )?
+                ) {
+                    Ok((_src, dest, _fees)) => (quote_params.amount, dest),
+                    Err(crate::error::SdkError::InsufficientLiquidity {
+                        required,
+                        available,
+                    }) => cap_at_liquidity(quote_params.amount, required, available),
+                    Err(e) => return Err(e.into()),
+                }
             }
             _ => anyhow::bail!(
                 "quote_oracle() only supports oracle curves. Pool curve type: {:?}",
@@ -289,9 +303,8 @@ impl KDEXAmm {
             ),
         };
 
-        // DFlow Quote only contains in_amount and out_amount
         Ok(Quote {
-            in_amount: quote_params.amount,
+            in_amount,
             out_amount,
         })
     }
@@ -369,6 +382,16 @@ impl KDEXAmm {
 
         Ok(has_changes)
     }
+}
+
+/// When a swap's computed output exceeds the destination vault balance,
+/// proportionally scale down the input to match the available liquidity.
+fn cap_at_liquidity(amount_in: u64, required: u64, available: u64) -> (u64, u64) {
+    let consumed = (amount_in as u128)
+        .saturating_mul(available as u128)
+        .checked_div(required as u128)
+        .unwrap_or(0) as u64;
+    (consumed, available)
 }
 
 impl Amm for KDEXAmm {
@@ -518,34 +541,51 @@ impl Amm for KDEXAmm {
                             );
                         };
 
-                    let (_in_amount, out_amount, _total_fees) = match self.pool.curve_type() {
-                        CurveType::ConstantSpreadOracle => oracle::calculate_constant_spread_quote(
-                            &self.pool.fees,
-                            quote_params.amount,
-                            destination_vault_amount,
-                            trade_direction,
-                            curve_data,
-                            scope_account,
-                            self.token_a_decimals,
-                            self.token_b_decimals,
-                        )?,
-                        CurveType::InventorySkewOracle => oracle::calculate_inventory_skew_quote(
-                            &self.pool.fees,
-                            quote_params.amount,
-                            source_vault_amount,
-                            destination_vault_amount,
-                            trade_direction,
-                            curve_data,
-                            scope_account,
-                            self.token_a_decimals,
-                            self.token_b_decimals,
-                        )?,
+                    let (in_amount, out_amount) = match self.pool.curve_type() {
+                        CurveType::ConstantSpreadOracle => {
+                            match oracle::calculate_constant_spread_quote(
+                                &self.pool.fees,
+                                quote_params.amount,
+                                destination_vault_amount,
+                                trade_direction,
+                                curve_data,
+                                scope_account,
+                                self.token_a_decimals,
+                                self.token_b_decimals,
+                            ) {
+                                Ok((_src, dest, _fees)) => (quote_params.amount, dest),
+                                Err(crate::error::SdkError::InsufficientLiquidity {
+                                    required,
+                                    available,
+                                }) => cap_at_liquidity(quote_params.amount, required, available),
+                                Err(e) => return Err(e.into()),
+                            }
+                        }
+                        CurveType::InventorySkewOracle => {
+                            match oracle::calculate_inventory_skew_quote(
+                                &self.pool.fees,
+                                quote_params.amount,
+                                source_vault_amount,
+                                destination_vault_amount,
+                                trade_direction,
+                                curve_data,
+                                scope_account,
+                                self.token_a_decimals,
+                                self.token_b_decimals,
+                            ) {
+                                Ok((_src, dest, _fees)) => (quote_params.amount, dest),
+                                Err(crate::error::SdkError::InsufficientLiquidity {
+                                    required,
+                                    available,
+                                }) => cap_at_liquidity(quote_params.amount, required, available),
+                                Err(e) => return Err(e.into()),
+                            }
+                        }
                         _ => unreachable!(),
                     };
 
-                    // DFlow Quote only contains in_amount and out_amount
                     return Ok(Quote {
-                        in_amount: quote_params.amount,
+                        in_amount,
                         out_amount,
                     });
                 } else {
@@ -589,7 +629,7 @@ impl Amm for KDEXAmm {
             .ok_or_else(|| anyhow::anyhow!("Curve not updated. Call update() first."))?;
 
         // Calculate swap using kdex_client::quote
-        let result = kdex_client::quote::calculate_quote(
+        match kdex_client::quote::calculate_quote(
             self.pool.curve_type(),
             &self.pool.fees,
             actual_amount_in,
@@ -597,14 +637,24 @@ impl Amm for KDEXAmm {
             destination_amount,
             trade_direction,
             curve_data,
-        )
-        .map_err(|e| anyhow::anyhow!("Swap calculation failed: {}", e))?;
-
-        // DFlow Quote only contains in_amount and out_amount
-        Ok(Quote {
-            in_amount: actual_amount_in,
-            out_amount: result.destination_amount_swapped,
-        })
+        ) {
+            Ok(result) => Ok(Quote {
+                in_amount: actual_amount_in,
+                out_amount: result.destination_amount_swapped,
+            }),
+            Err(kdex_client::quote::QuoteError::InsufficientLiquidity {
+                required,
+                available,
+            }) => {
+                let (consumed, capped_out) =
+                    cap_at_liquidity(actual_amount_in, required, available);
+                Ok(Quote {
+                    in_amount: consumed,
+                    out_amount: capped_out,
+                })
+            }
+            Err(e) => Err(anyhow::anyhow!("Swap calculation failed: {}", e)),
+        }
     }
 
     fn get_swap_and_account_metas(&self, swap_params: &SwapParams) -> Result<SwapAndAccountMetas> {
