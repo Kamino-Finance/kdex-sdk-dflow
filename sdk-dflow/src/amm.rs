@@ -85,6 +85,9 @@ pub struct KDEXAmm {
     token_a_decimals: u8,
     /// Token B decimals (populated from mint account during update)
     token_b_decimals: u8,
+    /// Target vault utilization in basis points (default 9800 = 98%)
+    /// Valid range: 9000-9900 (90%-99%)
+    vault_capacity_target_bps: u16,
 }
 
 impl KDEXAmm {
@@ -107,6 +110,7 @@ impl KDEXAmm {
             scope_price_feeds: HashMap::new(),
             token_a_decimals: 0,
             token_b_decimals: 0,
+            vault_capacity_target_bps: 9800, // Default: 98%
         })
     }
 
@@ -141,7 +145,46 @@ impl KDEXAmm {
             scope_price_feeds: HashMap::new(),
             token_a_decimals: 0,
             token_b_decimals: 0,
+            vault_capacity_target_bps: 9800, // Default: 98%
         })
+    }
+
+    /// Sets the target vault capacity in basis points (default: 9800 = 98%)
+    ///
+    /// This controls how much of the vault capacity can be used in a single swap.
+    /// Lower values are more conservative (higher safety buffer), higher values
+    /// allow more capital efficiency but with less margin for error.
+    ///
+    /// # Arguments
+    /// * `target_bps` - Target capacity in basis points (valid range: 9000-9900, i.e., 90%-99%)
+    ///
+    /// # Example
+    /// ```ignore
+    /// use kdex_sdk_dflow::{KDEXAmm, KeyedAccount};
+    ///
+    /// // Conservative routing strategy - use 95% of vault capacity
+    /// let conservative_amm = KDEXAmm::new_from_keyed_account(&keyed_account)?
+    ///     .with_vault_capacity_target(9500)?;
+    ///
+    /// // Aggressive routing strategy - use 99% of vault capacity
+    /// let aggressive_amm = KDEXAmm::new_from_keyed_account(&keyed_account)?
+    ///     .with_vault_capacity_target(9900)?;
+    ///
+    /// // Default behavior (98%) - no configuration needed
+    /// let default_amm = KDEXAmm::new_from_keyed_account(&keyed_account)?;
+    /// ```
+    ///
+    /// # Errors
+    /// Returns an error if `target_bps` is outside the valid range of 9000-9900.
+    pub fn with_vault_capacity_target(mut self, target_bps: u16) -> Result<Self> {
+        if !(9000..=9900).contains(&target_bps) {
+            anyhow::bail!(
+                "vault_capacity_target_bps must be between 9000-9900 (90%-99%), got {}",
+                target_bps
+            );
+        }
+        self.vault_capacity_target_bps = target_bps;
+        Ok(self)
     }
 
     /// Gets the token program for a given mint by checking which vault it corresponds to
@@ -304,6 +347,7 @@ impl KDEXAmm {
                     price_offset_bps,
                     trade_direction,
                     total_fee_bps,
+                    self.vault_capacity_target_bps,
                 );
 
                 match oracle::calculate_constant_spread_quote(
@@ -322,8 +366,12 @@ impl KDEXAmm {
                         available,
                     }) => {
                         // Fallback: cap to ~98% if estimate was insufficient
-                        let capped_input =
-                            cap_input_proportional(estimated_input, required, available);
+                        let capped_input = cap_input_proportional(
+                            estimated_input,
+                            required,
+                            available,
+                            self.vault_capacity_target_bps,
+                        );
                         match oracle::calculate_constant_spread_quote(
                             &self.pool.fees,
                             capped_input,
@@ -411,6 +459,7 @@ impl KDEXAmm {
                     price_offset_bps,
                     trade_direction,
                     total_fee_bps,
+                    self.vault_capacity_target_bps,
                 );
 
                 match oracle::calculate_inventory_skew_quote(
@@ -430,8 +479,12 @@ impl KDEXAmm {
                         available,
                     }) => {
                         // Fallback: cap to ~98% if estimate was insufficient
-                        let capped_input =
-                            cap_input_proportional(estimated_input, required, available);
+                        let capped_input = cap_input_proportional(
+                            estimated_input,
+                            required,
+                            available,
+                            self.vault_capacity_target_bps,
+                        );
                         match oracle::calculate_inventory_skew_quote(
                             &self.pool.fees,
                             capped_input,
@@ -537,12 +590,16 @@ impl KDEXAmm {
     }
 }
 
-/// Estimate maximum input to target ~98% of vault capacity based on oracle price.
+/// Estimate maximum input to target specified % of vault capacity based on oracle price.
 ///
 /// Rough approximation using oracle price and fees. For non-linear curves (InventorySkewOracle),
 /// this may be conservative, but prevents hitting vault limits.
 ///
+/// # Arguments
+/// * `target_bps` - Target vault utilization in basis points (e.g., 9800 = 98%)
+///
 /// Returns estimated max input, or amount_in if no cap needed.
+#[allow(clippy::too_many_arguments)]
 fn estimate_max_input_for_vault(
     amount_in: u64,
     vault_capacity: u64,
@@ -551,12 +608,13 @@ fn estimate_max_input_for_vault(
     price_offset_bps: i64,
     trade_direction: TradeDirection,
     fee_bps: u64,
+    target_bps: u16,
 ) -> u64 {
-    // Target 98% of vault capacity
+    // Target specified % of vault capacity
     let target_output = (vault_capacity as u128)
-        .saturating_mul(98)
-        .checked_div(100)
-        .expect("Division by 100 should never fail");
+        .saturating_mul(target_bps as u128)
+        .checked_div(10000)
+        .expect("Division by 10000 should never fail");
 
     // Adjust oracle price for price_offset_bps (negated as per SDK convention)
     let adjusted_price = {
@@ -618,14 +676,22 @@ fn estimate_max_input_for_vault(
 /// Cap input amount proportionally when output exceeds vault capacity (fallback).
 ///
 /// Used only when estimate was insufficient and InsufficientLiquidity error occurs.
-fn cap_input_proportional(amount_in: u64, output_amount: u64, vault_capacity: u64) -> u64 {
-    // Scale down input proportionally: amount_in * (vault_capacity / output_amount) * 0.98
+///
+/// # Arguments
+/// * `target_bps` - Target vault utilization in basis points (e.g., 9800 = 98%)
+fn cap_input_proportional(
+    amount_in: u64,
+    output_amount: u64,
+    vault_capacity: u64,
+    target_bps: u16,
+) -> u64 {
+    // Scale down input proportionally: amount_in * (vault_capacity / output_amount) * target_bps
     (amount_in as u128)
         .saturating_mul(vault_capacity as u128)
-        .saturating_mul(98) // 2% buffer
+        .saturating_mul(target_bps as u128)
         .checked_div(output_amount as u128)
         .unwrap_or(0)
-        .checked_div(100)
+        .checked_div(10000)
         .unwrap_or(0) as u64
 }
 
@@ -833,6 +899,7 @@ impl Amm for KDEXAmm {
                                 price_offset_bps,
                                 trade_direction,
                                 total_fee_bps,
+                                self.vault_capacity_target_bps,
                             );
 
                             match oracle::calculate_constant_spread_quote(
@@ -855,6 +922,7 @@ impl Amm for KDEXAmm {
                                         estimated_input,
                                         required,
                                         available,
+                                        self.vault_capacity_target_bps,
                                     );
                                     match oracle::calculate_constant_spread_quote(
                                         &self.pool.fees,
@@ -929,6 +997,7 @@ impl Amm for KDEXAmm {
                                 price_offset_bps,
                                 trade_direction,
                                 total_fee_bps,
+                                self.vault_capacity_target_bps,
                             );
 
                             match oracle::calculate_inventory_skew_quote(
@@ -952,6 +1021,7 @@ impl Amm for KDEXAmm {
                                         estimated_input,
                                         required,
                                         available,
+                                        self.vault_capacity_target_bps,
                                     );
                                     match oracle::calculate_inventory_skew_quote(
                                         &self.pool.fees,
@@ -1029,18 +1099,19 @@ impl Amm for KDEXAmm {
             curve_data,
         ) {
             Ok(result) => {
-                // Apply 98% vault capacity limit proactively for consistent behavior
+                // Apply vault capacity limit proactively for consistent behavior
                 let max_output = (destination_amount as u128)
-                    .saturating_mul(98)
-                    .checked_div(100)
+                    .saturating_mul(self.vault_capacity_target_bps as u128)
+                    .checked_div(10000)
                     .unwrap_or(0) as u64;
 
                 if result.destination_amount_swapped > max_output {
-                    // Cap input to target 98% of vault capacity
+                    // Cap input to target vault capacity
                     let capped_input = cap_input_proportional(
                         actual_amount_in,
                         result.destination_amount_swapped,
                         destination_amount,
+                        self.vault_capacity_target_bps,
                     );
                     match kdex_client::quote::calculate_quote(
                         self.pool.curve_type(),
@@ -1071,8 +1142,13 @@ impl Amm for KDEXAmm {
                 required,
                 available,
             }) => {
-                // Fallback: cap to 98% of available if insufficient liquidity
-                let capped_input = cap_input_proportional(actual_amount_in, required, available);
+                // Fallback: cap to target % of available if insufficient liquidity
+                let capped_input = cap_input_proportional(
+                    actual_amount_in,
+                    required,
+                    available,
+                    self.vault_capacity_target_bps,
+                );
                 match kdex_client::quote::calculate_quote(
                     self.pool.curve_type(),
                     &self.pool.fees,
