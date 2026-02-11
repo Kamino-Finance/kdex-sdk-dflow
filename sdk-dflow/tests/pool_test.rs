@@ -263,8 +263,115 @@ fn run_pool_tests() -> anyhow::Result<()> {
             }
         }
 
-        // Test quote with amount exceeding liquidity
-        println!("\n  Testing quote with excessive amount (liquidity check):");
+        // Test quotes near liquidity limits (to observe 5% buffer behavior)
+        println!("\n  Testing quotes near liquidity limits (A->B direction):");
+        // For oracle pools with ~532M Token B vault, test amounts targeting 85%, 90%, 95%, 98%, 99.9% output
+        let near_limit_inputs = if is_oracle {
+            vec![
+                (455_000_000u64, "~85% vault"),
+                (482_000_000u64, "~90% vault"),
+                (509_000_000u64, "~95% vault"),
+                (525_000_000u64, "~98% vault"),
+                (532_500_000u64, "~99.9% vault"),
+            ]
+        } else {
+            vec![] // Skip for non-oracle pools
+        };
+
+        for (amount, label) in near_limit_inputs {
+            let result = if is_oracle {
+                amm.quote_oracle(
+                    &QuoteParams {
+                        input_mint: mints[0],
+                        output_mint: mints[1],
+                        amount,
+                        swap_mode: SwapMode::ExactIn,
+                    },
+                    &oracle_accounts_map,
+                )
+            } else {
+                amm.quote(&QuoteParams {
+                    input_mint: mints[0],
+                    output_mint: mints[1],
+                    amount,
+                    swap_mode: SwapMode::ExactIn,
+                })
+            };
+
+            match result {
+                Ok(quote) => {
+                    println!(
+                        "    {} {}: {} in -> {} out (requested {})",
+                        label,
+                        if quote.in_amount < amount {
+                            "[CAPPED]"
+                        } else {
+                            ""
+                        },
+                        quote.in_amount,
+                        quote.out_amount,
+                        amount
+                    );
+                }
+                Err(e) => {
+                    println!("    {} Quote failed: {}", label, e);
+                }
+            }
+        }
+
+        // Test reverse direction near liquidity limits (B->A direction)
+        println!("\n  Testing quotes near liquidity limits (B->A direction):");
+        // For oracle pools with ~50M Token A vault, test 99.9% = 49,950,000 A out
+        // Price is ~10^-6 B/A, so need ~50 raw B to get ~49.95M raw A
+        let reverse_near_limit = if is_oracle {
+            vec![(50u64, "~99.9% vault")]
+        } else {
+            vec![]
+        };
+
+        for (amount, label) in reverse_near_limit {
+            let result = if is_oracle {
+                amm.quote_oracle(
+                    &QuoteParams {
+                        input_mint: mints[1],
+                        output_mint: mints[0],
+                        amount,
+                        swap_mode: SwapMode::ExactIn,
+                    },
+                    &oracle_accounts_map,
+                )
+            } else {
+                amm.quote(&QuoteParams {
+                    input_mint: mints[1],
+                    output_mint: mints[0],
+                    amount,
+                    swap_mode: SwapMode::ExactIn,
+                })
+            };
+
+            match result {
+                Ok(quote) => {
+                    println!(
+                        "    {} {}: {} in -> {} out (requested {})",
+                        label,
+                        if quote.in_amount < amount {
+                            "[CAPPED]"
+                        } else {
+                            ""
+                        },
+                        quote.in_amount,
+                        quote.out_amount,
+                        amount
+                    );
+                }
+                Err(e) => {
+                    println!("    {} Quote failed: {}", label, e);
+                }
+            }
+        }
+
+        // Test quote with amount exceeding liquidity (A->B direction)
+        println!("\n  Testing quote with excessive amount (A->B liquidity check):");
         let excessive_amount = u64::MAX / 2; // Very large amount
         let result = if is_oracle {
             amm.quote_oracle(
@@ -302,6 +409,46 @@ fn run_pool_tests() -> anyhow::Result<()> {
                     println!("    Quote correctly rejected excessive amount: {}", e);
                 } else {
                     println!("    Quote failed (may be expected): {}", e);
+                }
+            }
+        }
+
+        // Test quote with excessive amount (B->A direction) to verify consistency with 99.9% vault test
+        if is_oracle {
+            println!("\n  Testing quote with overcapacity (B->A liquidity check):");
+            let excessive_amount_reverse = 50_000u64; // 1000x the 99.9% test: should show similar capping
+            let result = amm.quote_oracle(
+                &QuoteParams {
+                    input_mint: mints[1],
+                    output_mint: mints[0],
+                    amount: excessive_amount_reverse,
+                    swap_mode: SwapMode::ExactIn,
+                },
+                &oracle_accounts_map,
+            );
+
+            match result {
+                Ok(quote) => {
+                    println!(
+                        "    {} Quote returned: {} in -> {} out (requested {})",
+                        if quote.in_amount < excessive_amount_reverse {
+                            "[CAPPED]"
+                        } else {
+                            ""
+                        },
+                        quote.in_amount,
+                        quote.out_amount,
+                        excessive_amount_reverse
+                    );
+                }
+                Err(e) => {
+                    if format!("{}", e).contains("liquidity")
+                        || format!("{}", e).contains("Insufficient")
+                    {
+                        println!("    Quote correctly rejected excessive amount: {}", e);
+                    } else {
+                        println!("    Quote failed (may be expected): {}", e);
+                    }
                 }
             }
         }

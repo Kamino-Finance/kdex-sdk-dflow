@@ -248,9 +248,67 @@ impl KDEXAmm {
                     anyhow::anyhow!("Scope price feed account not found: {}", scope_price_feed)
                 })?;
 
+                // Extract price_chain and price_offset_bps for estimation
+                // Layout: discriminator(8) + scope_price_feed(32) + price_chain([u16;4]=8) + base_spread_bps(8) + price_offset_bps(8)
+                if curve_account.data.len() < 48 {
+                    anyhow::bail!(
+                        "ConstantSpreadOracle curve account data too short: {} bytes (expected >= 48)",
+                        curve_account.data.len()
+                    );
+                }
+                let price_chain: [u16; 4] = [
+                    u16::from_le_bytes([curve_account.data[40], curve_account.data[41]]),
+                    u16::from_le_bytes([curve_account.data[42], curve_account.data[43]]),
+                    u16::from_le_bytes([curve_account.data[44], curve_account.data[45]]),
+                    u16::from_le_bytes([curve_account.data[46], curve_account.data[47]]),
+                ];
+
+                if curve_account.data.len() < 64 {
+                    anyhow::bail!(
+                        "ConstantSpreadOracle curve account data too short for price_offset_bps: {} bytes (expected >= 64)",
+                        curve_account.data.len()
+                    );
+                }
+                let price_offset_bps = i64::from_le_bytes([
+                    curve_account.data[56],
+                    curve_account.data[57],
+                    curve_account.data[58],
+                    curve_account.data[59],
+                    curve_account.data[60],
+                    curve_account.data[61],
+                    curve_account.data[62],
+                    curve_account.data[63],
+                ]);
+
+                // Fetch oracle price for estimation
+                let (price_value, price_exp) =
+                    oracle::fetch_scope_price_chain(scope_account, &price_chain)?;
+
+                // Estimate max input to target 98% of vault
+                let total_fee_bps = self
+                    .pool
+                    .fees
+                    .trade_fee_numerator
+                    .saturating_add(self.pool.fees.owner_trade_fee_numerator)
+                    .saturating_mul(10000)
+                    .checked_div(self.pool.fees.trade_fee_denominator)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("Fee calculation failed: denominator is zero")
+                    })?;
+
+                let estimated_input = estimate_max_input_for_vault(
+                    quote_params.amount,
+                    destination_vault_amount,
+                    price_value,
+                    price_exp,
+                    price_offset_bps,
+                    trade_direction,
+                    total_fee_bps,
+                );
+
                 match oracle::calculate_constant_spread_quote(
                     &self.pool.fees,
-                    quote_params.amount,
+                    estimated_input,
                     destination_vault_amount,
                     trade_direction,
                     &curve_account.data,
@@ -258,14 +316,17 @@ impl KDEXAmm {
                     self.token_a_decimals,
                     self.token_b_decimals,
                 ) {
-                    Ok((_src, dest, _fees)) => (quote_params.amount, dest),
+                    Ok((_src, dest, _fees)) => (estimated_input, dest),
                     Err(crate::error::SdkError::InsufficientLiquidity {
                         required,
                         available,
-                    }) => search_max_input(quote_params.amount, required, available, |amt| {
+                    }) => {
+                        // Fallback: cap to ~98% if estimate was insufficient
+                        let capped_input =
+                            cap_input_proportional(estimated_input, required, available);
                         match oracle::calculate_constant_spread_quote(
                             &self.pool.fees,
-                            amt,
+                            capped_input,
                             destination_vault_amount,
                             trade_direction,
                             &curve_account.data,
@@ -273,13 +334,10 @@ impl KDEXAmm {
                             self.token_a_decimals,
                             self.token_b_decimals,
                         ) {
-                            Ok((_src, dest, _fees)) => SwapFit::Fits(dest),
-                            Err(crate::error::SdkError::InsufficientLiquidity { .. }) => {
-                                SwapFit::ExceedsVault
-                            }
-                            Err(_) => SwapFit::OtherError,
+                            Ok((_src, dest, _fees)) => (capped_input, dest),
+                            Err(e) => return Err(e.into()),
                         }
-                    }),
+                    }
                     Err(e) => return Err(e.into()),
                 }
             }
@@ -295,9 +353,69 @@ impl KDEXAmm {
                     anyhow::anyhow!("Scope price feed account not found: {}", scope_price_feed)
                 })?;
 
+                // Extract price_chain and price_offset_bps for estimation
+                // Layout: discriminator(8) + scope_price_feed(32) + price_chain([u16;4]=8) + ...
+                // + base_spread_bps(8) + size_impact_bps(8) + inventory_impact_bps(8) + price_offset_bps(8)
+                // price_offset_bps is at offset 112-119 for InventorySkewOracle
+                if curve_account.data.len() < 48 {
+                    anyhow::bail!(
+                        "InventorySkewOracle curve account data too short: {} bytes (expected >= 48)",
+                        curve_account.data.len()
+                    );
+                }
+                let price_chain: [u16; 4] = [
+                    u16::from_le_bytes([curve_account.data[40], curve_account.data[41]]),
+                    u16::from_le_bytes([curve_account.data[42], curve_account.data[43]]),
+                    u16::from_le_bytes([curve_account.data[44], curve_account.data[45]]),
+                    u16::from_le_bytes([curve_account.data[46], curve_account.data[47]]),
+                ];
+
+                if curve_account.data.len() < 120 {
+                    anyhow::bail!(
+                        "InventorySkewOracle curve account data too short for price_offset_bps: {} bytes (expected >= 120)",
+                        curve_account.data.len()
+                    );
+                }
+                let price_offset_bps = i64::from_le_bytes([
+                    curve_account.data[112],
+                    curve_account.data[113],
+                    curve_account.data[114],
+                    curve_account.data[115],
+                    curve_account.data[116],
+                    curve_account.data[117],
+                    curve_account.data[118],
+                    curve_account.data[119],
+                ]);
+
+                // Fetch oracle price for estimation
+                let (price_value, price_exp) =
+                    oracle::fetch_scope_price_chain(scope_account, &price_chain)?;
+
+                // Estimate max input to target 98% of vault (conservative for non-linear curve)
+                let total_fee_bps = self
+                    .pool
+                    .fees
+                    .trade_fee_numerator
+                    .saturating_add(self.pool.fees.owner_trade_fee_numerator)
+                    .saturating_mul(10000)
+                    .checked_div(self.pool.fees.trade_fee_denominator)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("Fee calculation failed: denominator is zero")
+                    })?;
+
+                let estimated_input = estimate_max_input_for_vault(
+                    quote_params.amount,
+                    destination_vault_amount,
+                    price_value,
+                    price_exp,
+                    price_offset_bps,
+                    trade_direction,
+                    total_fee_bps,
+                );
+
                 match oracle::calculate_inventory_skew_quote(
                     &self.pool.fees,
-                    quote_params.amount,
+                    estimated_input,
                     source_vault_amount,
                     destination_vault_amount,
                     trade_direction,
@@ -306,14 +424,17 @@ impl KDEXAmm {
                     self.token_a_decimals,
                     self.token_b_decimals,
                 ) {
-                    Ok((_src, dest, _fees)) => (quote_params.amount, dest),
+                    Ok((_src, dest, _fees)) => (estimated_input, dest),
                     Err(crate::error::SdkError::InsufficientLiquidity {
                         required,
                         available,
-                    }) => search_max_input(quote_params.amount, required, available, |amt| {
+                    }) => {
+                        // Fallback: cap to ~98% if estimate was insufficient
+                        let capped_input =
+                            cap_input_proportional(estimated_input, required, available);
                         match oracle::calculate_inventory_skew_quote(
                             &self.pool.fees,
-                            amt,
+                            capped_input,
                             source_vault_amount,
                             destination_vault_amount,
                             trade_direction,
@@ -322,13 +443,10 @@ impl KDEXAmm {
                             self.token_a_decimals,
                             self.token_b_decimals,
                         ) {
-                            Ok((_src, dest, _fees)) => SwapFit::Fits(dest),
-                            Err(crate::error::SdkError::InsufficientLiquidity { .. }) => {
-                                SwapFit::ExceedsVault
-                            }
-                            Err(_) => SwapFit::OtherError,
+                            Ok((_src, dest, _fees)) => (capped_input, dest),
+                            Err(e) => return Err(e.into()),
                         }
-                    }),
+                    }
                     Err(e) => return Err(e.into()),
                 }
             }
@@ -419,66 +537,96 @@ impl KDEXAmm {
     }
 }
 
-/// Result of attempting a swap quote at a given input amount.
-enum SwapFit {
-    /// Output fits within the destination vault.
-    Fits(u64),
-    /// Output exceeds destination vault liquidity.
-    ExceedsVault,
-    /// Other error (e.g., input too small to cover fees).
-    OtherError,
+/// Estimate maximum input to target ~98% of vault capacity based on oracle price.
+///
+/// Rough approximation using oracle price and fees. For non-linear curves (InventorySkewOracle),
+/// this may be conservative, but prevents hitting vault limits.
+///
+/// Returns estimated max input, or amount_in if no cap needed.
+fn estimate_max_input_for_vault(
+    amount_in: u64,
+    vault_capacity: u64,
+    oracle_price_value: u128,
+    oracle_price_exp: u64,
+    price_offset_bps: i64,
+    trade_direction: TradeDirection,
+    fee_bps: u64,
+) -> u64 {
+    // Target 98% of vault capacity
+    let target_output = (vault_capacity as u128)
+        .saturating_mul(98)
+        .checked_div(100)
+        .expect("Division by 100 should never fail");
+
+    // Adjust oracle price for price_offset_bps (negated as per SDK convention)
+    let adjusted_price = {
+        let negated_offset = (price_offset_bps as i128)
+            .checked_neg()
+            .expect("Price offset negation should not overflow");
+        let offset_factor = 10000i128
+            .checked_add(negated_offset)
+            .expect("Price offset addition should not overflow");
+
+        // Ensure multiplier is positive
+        if offset_factor <= 0 {
+            panic!(
+                "Price offset resulted in non-positive multiplier: {}",
+                offset_factor
+            );
+        }
+
+        oracle_price_value
+            .checked_mul(offset_factor as u128)
+            .expect("Price multiplication should not overflow")
+            .checked_div(10000)
+            .expect("Division by 10000 should never fail")
+    };
+
+    // Rough estimate considering fees (worst case: all fees)
+    let fee_factor = (10000u128).saturating_sub(fee_bps as u128);
+
+    let estimated_max = match trade_direction {
+        TradeDirection::AtoB => {
+            // output = input * price / 10^exp * (1 - fees)
+            // input_max = output * 10^exp / price / (1 - fees)
+            let scale = 10u128.saturating_pow(oracle_price_exp as u32);
+            target_output
+                .saturating_mul(scale)
+                .saturating_mul(10000)
+                .checked_div(adjusted_price)
+                .expect("Price division should not fail with positive adjusted price")
+                .checked_div(fee_factor)
+                .expect("Fee factor division should not fail")
+        }
+        TradeDirection::BtoA => {
+            // output = input * 10^exp / price * (1 - fees)
+            // input_max = output * price / 10^exp / (1 - fees)
+            let scale = 10u128.saturating_pow(oracle_price_exp as u32);
+            target_output
+                .saturating_mul(adjusted_price)
+                .saturating_mul(10000)
+                .checked_div(scale)
+                .expect("Scale division should not fail with valid exponent")
+                .checked_div(fee_factor)
+                .expect("Fee factor division should not fail")
+        }
+    } as u64;
+
+    amount_in.min(estimated_max)
 }
 
-/// Binary search for the maximum input amount whose swap output fits within
-/// the destination vault. Uses a proportional estimate to seed the search,
-/// keeping iterations to ~2-5 in practice instead of 64.
-/// Returns (consumed_input, output_amount).
-fn search_max_input(
-    amount_in: u64,
-    required: u64,
-    available: u64,
-    try_swap: impl Fn(u64) -> SwapFit,
-) -> (u64, u64) {
-    // Proportional estimate: the exact answer for linear curves, close for non-linear
-    let estimate = (amount_in as u128)
-        .saturating_mul(available as u128)
-        .checked_div(required as u128)
-        .unwrap_or(0) as u64;
-
-    // Seed the search around the estimate with a small margin
-    let margin = estimate / 100; // 1% margin
-    let mut lo: u64 = estimate.saturating_sub(margin);
-    let mut hi: u64 = estimate
-        .saturating_add(margin)
-        .min(amount_in.saturating_sub(1));
-    let mut best = (0u64, 0u64);
-
-    while lo <= hi {
-        let mid = lo.saturating_add(hi.saturating_sub(lo) / 2);
-        match try_swap(mid) {
-            SwapFit::Fits(out) => {
-                best = (mid, out);
-                if mid == u64::MAX {
-                    break;
-                }
-                lo = mid.saturating_add(1);
-            }
-            SwapFit::ExceedsVault => {
-                if mid == 0 {
-                    break;
-                }
-                hi = mid.saturating_sub(1);
-            }
-            SwapFit::OtherError => {
-                if mid == u64::MAX {
-                    break;
-                }
-                lo = mid.saturating_add(1);
-            }
-        }
-    }
-
-    best
+/// Cap input amount proportionally when output exceeds vault capacity (fallback).
+///
+/// Used only when estimate was insufficient and InsufficientLiquidity error occurs.
+fn cap_input_proportional(amount_in: u64, output_amount: u64, vault_capacity: u64) -> u64 {
+    // Scale down input proportionally: amount_in * (vault_capacity / output_amount) * 0.98
+    (amount_in as u128)
+        .saturating_mul(vault_capacity as u128)
+        .saturating_mul(98) // 2% buffer
+        .checked_div(output_amount as u128)
+        .unwrap_or(0)
+        .checked_div(100)
+        .unwrap_or(0) as u64
 }
 
 impl Amm for KDEXAmm {
@@ -630,9 +778,66 @@ impl Amm for KDEXAmm {
 
                     let (in_amount, out_amount) = match self.pool.curve_type() {
                         CurveType::ConstantSpreadOracle => {
+                            // Extract price_chain and price_offset_bps for estimation
+                            if curve_data.len() < 48 {
+                                anyhow::bail!(
+                                    "ConstantSpreadOracle curve data too short: {} bytes (expected >= 48)",
+                                    curve_data.len()
+                                );
+                            }
+                            let price_chain: [u16; 4] = [
+                                u16::from_le_bytes([curve_data[40], curve_data[41]]),
+                                u16::from_le_bytes([curve_data[42], curve_data[43]]),
+                                u16::from_le_bytes([curve_data[44], curve_data[45]]),
+                                u16::from_le_bytes([curve_data[46], curve_data[47]]),
+                            ];
+
+                            if curve_data.len() < 64 {
+                                anyhow::bail!(
+                                    "ConstantSpreadOracle curve data too short for price_offset_bps: {} bytes (expected >= 64)",
+                                    curve_data.len()
+                                );
+                            }
+                            let price_offset_bps = i64::from_le_bytes([
+                                curve_data[56],
+                                curve_data[57],
+                                curve_data[58],
+                                curve_data[59],
+                                curve_data[60],
+                                curve_data[61],
+                                curve_data[62],
+                                curve_data[63],
+                            ]);
+
+                            // Fetch oracle price for estimation
+                            let (price_value, price_exp) =
+                                oracle::fetch_scope_price_chain(scope_account, &price_chain)?;
+
+                            // Estimate max input to target 98% of vault
+                            let total_fee_bps = self
+                                .pool
+                                .fees
+                                .trade_fee_numerator
+                                .saturating_add(self.pool.fees.owner_trade_fee_numerator)
+                                .saturating_mul(10000)
+                                .checked_div(self.pool.fees.trade_fee_denominator)
+                                .ok_or_else(|| {
+                                    anyhow::anyhow!("Fee calculation failed: denominator is zero")
+                                })?;
+
+                            let estimated_input = estimate_max_input_for_vault(
+                                quote_params.amount,
+                                destination_vault_amount,
+                                price_value,
+                                price_exp,
+                                price_offset_bps,
+                                trade_direction,
+                                total_fee_bps,
+                            );
+
                             match oracle::calculate_constant_spread_quote(
                                 &self.pool.fees,
-                                quote_params.amount,
+                                estimated_input,
                                 destination_vault_amount,
                                 trade_direction,
                                 curve_data,
@@ -640,17 +845,20 @@ impl Amm for KDEXAmm {
                                 self.token_a_decimals,
                                 self.token_b_decimals,
                             ) {
-                                Ok((_src, dest, _fees)) => (quote_params.amount, dest),
+                                Ok((_src, dest, _fees)) => (estimated_input, dest),
                                 Err(crate::error::SdkError::InsufficientLiquidity {
                                     required,
                                     available,
-                                }) => search_max_input(
-                                    quote_params.amount,
-                                    required,
-                                    available,
-                                    |amt| match oracle::calculate_constant_spread_quote(
+                                }) => {
+                                    // Fallback: cap to ~98% if estimate was insufficient
+                                    let capped_input = cap_input_proportional(
+                                        estimated_input,
+                                        required,
+                                        available,
+                                    );
+                                    match oracle::calculate_constant_spread_quote(
                                         &self.pool.fees,
-                                        amt,
+                                        capped_input,
                                         destination_vault_amount,
                                         trade_direction,
                                         curve_data,
@@ -658,20 +866,74 @@ impl Amm for KDEXAmm {
                                         self.token_a_decimals,
                                         self.token_b_decimals,
                                     ) {
-                                        Ok((_src, dest, _fees)) => SwapFit::Fits(dest),
-                                        Err(crate::error::SdkError::InsufficientLiquidity {
-                                            ..
-                                        }) => SwapFit::ExceedsVault,
-                                        Err(_) => SwapFit::OtherError,
-                                    },
-                                ),
+                                        Ok((_src, dest, _fees)) => (capped_input, dest),
+                                        Err(e) => return Err(e.into()),
+                                    }
+                                }
                                 Err(e) => return Err(e.into()),
                             }
                         }
                         CurveType::InventorySkewOracle => {
+                            // Extract price_chain and price_offset_bps for estimation
+                            if curve_data.len() < 48 {
+                                anyhow::bail!(
+                                    "InventorySkewOracle curve data too short: {} bytes (expected >= 48)",
+                                    curve_data.len()
+                                );
+                            }
+                            let price_chain: [u16; 4] = [
+                                u16::from_le_bytes([curve_data[40], curve_data[41]]),
+                                u16::from_le_bytes([curve_data[42], curve_data[43]]),
+                                u16::from_le_bytes([curve_data[44], curve_data[45]]),
+                                u16::from_le_bytes([curve_data[46], curve_data[47]]),
+                            ];
+
+                            if curve_data.len() < 120 {
+                                anyhow::bail!(
+                                    "InventorySkewOracle curve data too short for price_offset_bps: {} bytes (expected >= 120)",
+                                    curve_data.len()
+                                );
+                            }
+                            let price_offset_bps = i64::from_le_bytes([
+                                curve_data[112],
+                                curve_data[113],
+                                curve_data[114],
+                                curve_data[115],
+                                curve_data[116],
+                                curve_data[117],
+                                curve_data[118],
+                                curve_data[119],
+                            ]);
+
+                            // Fetch oracle price for estimation
+                            let (price_value, price_exp) =
+                                oracle::fetch_scope_price_chain(scope_account, &price_chain)?;
+
+                            // Estimate max input to target 98% of vault (conservative for non-linear curve)
+                            let total_fee_bps = self
+                                .pool
+                                .fees
+                                .trade_fee_numerator
+                                .saturating_add(self.pool.fees.owner_trade_fee_numerator)
+                                .saturating_mul(10000)
+                                .checked_div(self.pool.fees.trade_fee_denominator)
+                                .ok_or_else(|| {
+                                    anyhow::anyhow!("Fee calculation failed: denominator is zero")
+                                })?;
+
+                            let estimated_input = estimate_max_input_for_vault(
+                                quote_params.amount,
+                                destination_vault_amount,
+                                price_value,
+                                price_exp,
+                                price_offset_bps,
+                                trade_direction,
+                                total_fee_bps,
+                            );
+
                             match oracle::calculate_inventory_skew_quote(
                                 &self.pool.fees,
-                                quote_params.amount,
+                                estimated_input,
                                 source_vault_amount,
                                 destination_vault_amount,
                                 trade_direction,
@@ -680,17 +942,20 @@ impl Amm for KDEXAmm {
                                 self.token_a_decimals,
                                 self.token_b_decimals,
                             ) {
-                                Ok((_src, dest, _fees)) => (quote_params.amount, dest),
+                                Ok((_src, dest, _fees)) => (estimated_input, dest),
                                 Err(crate::error::SdkError::InsufficientLiquidity {
                                     required,
                                     available,
-                                }) => search_max_input(
-                                    quote_params.amount,
-                                    required,
-                                    available,
-                                    |amt| match oracle::calculate_inventory_skew_quote(
+                                }) => {
+                                    // Fallback: cap to ~98% if estimate was insufficient
+                                    let capped_input = cap_input_proportional(
+                                        estimated_input,
+                                        required,
+                                        available,
+                                    );
+                                    match oracle::calculate_inventory_skew_quote(
                                         &self.pool.fees,
-                                        amt,
+                                        capped_input,
                                         source_vault_amount,
                                         destination_vault_amount,
                                         trade_direction,
@@ -699,13 +964,10 @@ impl Amm for KDEXAmm {
                                         self.token_a_decimals,
                                         self.token_b_decimals,
                                     ) {
-                                        Ok((_src, dest, _fees)) => SwapFit::Fits(dest),
-                                        Err(crate::error::SdkError::InsufficientLiquidity {
-                                            ..
-                                        }) => SwapFit::ExceedsVault,
-                                        Err(_) => SwapFit::OtherError,
-                                    },
-                                ),
+                                        Ok((_src, dest, _fees)) => (capped_input, dest),
+                                        Err(e) => return Err(e.into()),
+                                    }
+                                }
                                 Err(e) => return Err(e.into()),
                             }
                         }
@@ -766,36 +1028,69 @@ impl Amm for KDEXAmm {
             trade_direction,
             curve_data,
         ) {
-            Ok(result) => Ok(Quote {
-                in_amount: actual_amount_in,
-                out_amount: result.destination_amount_swapped,
-            }),
+            Ok(result) => {
+                // Apply 98% vault capacity limit proactively for consistent behavior
+                let max_output = (destination_amount as u128)
+                    .saturating_mul(98)
+                    .checked_div(100)
+                    .unwrap_or(0) as u64;
+
+                if result.destination_amount_swapped > max_output {
+                    // Cap input to target 98% of vault capacity
+                    let capped_input = cap_input_proportional(
+                        actual_amount_in,
+                        result.destination_amount_swapped,
+                        destination_amount,
+                    );
+                    match kdex_client::quote::calculate_quote(
+                        self.pool.curve_type(),
+                        &self.pool.fees,
+                        capped_input,
+                        source_amount,
+                        destination_amount,
+                        trade_direction,
+                        curve_data,
+                    ) {
+                        Ok(result_capped) => Ok(Quote {
+                            in_amount: capped_input,
+                            out_amount: result_capped.destination_amount_swapped,
+                        }),
+                        Err(e) => Err(anyhow::anyhow!(
+                            "Swap calculation failed after capping: {}",
+                            e
+                        )),
+                    }
+                } else {
+                    Ok(Quote {
+                        in_amount: actual_amount_in,
+                        out_amount: result.destination_amount_swapped,
+                    })
+                }
+            }
             Err(kdex_client::quote::QuoteError::InsufficientLiquidity {
                 required,
                 available,
             }) => {
-                let (consumed, capped_out) =
-                    search_max_input(actual_amount_in, required, available, |amt| {
-                        match kdex_client::quote::calculate_quote(
-                            self.pool.curve_type(),
-                            &self.pool.fees,
-                            amt,
-                            source_amount,
-                            destination_amount,
-                            trade_direction,
-                            curve_data,
-                        ) {
-                            Ok(result) => SwapFit::Fits(result.destination_amount_swapped),
-                            Err(kdex_client::quote::QuoteError::InsufficientLiquidity {
-                                ..
-                            }) => SwapFit::ExceedsVault,
-                            Err(_) => SwapFit::OtherError,
-                        }
-                    });
-                Ok(Quote {
-                    in_amount: consumed,
-                    out_amount: capped_out,
-                })
+                // Fallback: cap to 98% of available if insufficient liquidity
+                let capped_input = cap_input_proportional(actual_amount_in, required, available);
+                match kdex_client::quote::calculate_quote(
+                    self.pool.curve_type(),
+                    &self.pool.fees,
+                    capped_input,
+                    source_amount,
+                    destination_amount,
+                    trade_direction,
+                    curve_data,
+                ) {
+                    Ok(result) => Ok(Quote {
+                        in_amount: capped_input,
+                        out_amount: result.destination_amount_swapped,
+                    }),
+                    Err(e) => Err(anyhow::anyhow!(
+                        "Swap calculation failed after capping: {}",
+                        e
+                    )),
+                }
             }
             Err(e) => Err(anyhow::anyhow!("Swap calculation failed: {}", e)),
         }
