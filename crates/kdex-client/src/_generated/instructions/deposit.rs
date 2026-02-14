@@ -13,7 +13,7 @@ pub const DEPOSIT_DISCRIMINATOR: [u8; 8] = [242, 35, 198, 137, 82, 225, 242, 182
 /// Accounts.
 #[derive(Debug)]
 pub struct Deposit {
-    pub signer: solana_pubkey::Pubkey,
+    pub admin: solana_pubkey::Pubkey,
 
     pub pool: solana_pubkey::Pubkey,
 
@@ -60,7 +60,7 @@ impl Deposit {
         remaining_accounts: &[solana_instruction::AccountMeta],
     ) -> solana_instruction::Instruction {
         let mut accounts = Vec::with_capacity(17 + remaining_accounts.len());
-        accounts.push(solana_instruction::AccountMeta::new(self.signer, true));
+        accounts.push(solana_instruction::AccountMeta::new(self.admin, true));
         accounts.push(solana_instruction::AccountMeta::new(self.pool, false));
         accounts.push(solana_instruction::AccountMeta::new_readonly(
             self.swap_curve,
@@ -177,7 +177,7 @@ impl DepositInstructionArgs {
 ///
 /// ### Accounts:
 ///
-///   0. `[writable, signer]` signer
+///   0. `[writable, signer]` admin
 ///   1. `[writable]` pool
 ///   2. `[]` swap_curve
 ///   3. `[]` pool_authority
@@ -196,7 +196,7 @@ impl DepositInstructionArgs {
 ///   16. `[]` program
 #[derive(Clone, Debug, Default)]
 pub struct DepositBuilder {
-    signer: Option<solana_pubkey::Pubkey>,
+    admin: Option<solana_pubkey::Pubkey>,
     pool: Option<solana_pubkey::Pubkey>,
     swap_curve: Option<solana_pubkey::Pubkey>,
     pool_authority: Option<solana_pubkey::Pubkey>,
@@ -224,8 +224,8 @@ impl DepositBuilder {
         Self::default()
     }
     #[inline(always)]
-    pub fn signer(&mut self, signer: solana_pubkey::Pubkey) -> &mut Self {
-        self.signer = Some(signer);
+    pub fn admin(&mut self, admin: solana_pubkey::Pubkey) -> &mut Self {
+        self.admin = Some(admin);
         self
     }
     #[inline(always)]
@@ -353,7 +353,7 @@ impl DepositBuilder {
     #[allow(clippy::clone_on_copy)]
     pub fn instruction(&self) -> solana_instruction::Instruction {
         let accounts = Deposit {
-            signer: self.signer.expect("signer is not set"),
+            admin: self.admin.expect("admin is not set"),
             pool: self.pool.expect("pool is not set"),
             swap_curve: self.swap_curve.expect("swap_curve is not set"),
             pool_authority: self.pool_authority.expect("pool_authority is not set"),
@@ -400,7 +400,7 @@ impl DepositBuilder {
 
 /// `deposit` CPI accounts.
 pub struct DepositCpiAccounts<'a, 'b> {
-    pub signer: &'b solana_account_info::AccountInfo<'a>,
+    pub admin: &'b solana_account_info::AccountInfo<'a>,
 
     pub pool: &'b solana_account_info::AccountInfo<'a>,
 
@@ -440,7 +440,7 @@ pub struct DepositCpi<'a, 'b> {
     /// The program to invoke.
     pub __program: &'b solana_account_info::AccountInfo<'a>,
 
-    pub signer: &'b solana_account_info::AccountInfo<'a>,
+    pub admin: &'b solana_account_info::AccountInfo<'a>,
 
     pub pool: &'b solana_account_info::AccountInfo<'a>,
 
@@ -485,7 +485,7 @@ impl<'a, 'b> DepositCpi<'a, 'b> {
     ) -> Self {
         Self {
             __program: program,
-            signer: accounts.signer,
+            admin: accounts.admin,
             pool: accounts.pool,
             swap_curve: accounts.swap_curve,
             pool_authority: accounts.pool_authority,
@@ -529,7 +529,7 @@ impl<'a, 'b> DepositCpi<'a, 'b> {
         remaining_accounts: &[(&'b solana_account_info::AccountInfo<'a>, bool, bool)],
     ) -> solana_program_error::ProgramResult {
         let mut accounts = Vec::with_capacity(17 + remaining_accounts.len());
-        accounts.push(solana_instruction::AccountMeta::new(*self.signer.key, true));
+        accounts.push(solana_instruction::AccountMeta::new(*self.admin.key, true));
         accounts.push(solana_instruction::AccountMeta::new(*self.pool.key, false));
         accounts.push(solana_instruction::AccountMeta::new_readonly(
             *self.swap_curve.key,
@@ -609,7 +609,7 @@ impl<'a, 'b> DepositCpi<'a, 'b> {
         };
         let mut account_infos = Vec::with_capacity(18 + remaining_accounts.len());
         account_infos.push(self.__program.clone());
-        account_infos.push(self.signer.clone());
+        account_infos.push(self.admin.clone());
         account_infos.push(self.pool.clone());
         account_infos.push(self.swap_curve.clone());
         account_infos.push(self.pool_authority.clone());
@@ -642,7 +642,7 @@ impl<'a, 'b> DepositCpi<'a, 'b> {
 ///
 /// ### Accounts:
 ///
-///   0. `[writable, signer]` signer
+///   0. `[writable, signer]` admin
 ///   1. `[writable]` pool
 ///   2. `[]` swap_curve
 ///   3. `[]` pool_authority
@@ -668,7 +668,7 @@ impl<'a, 'b> DepositCpiBuilder<'a, 'b> {
     pub fn new(program: &'b solana_account_info::AccountInfo<'a>) -> Self {
         let instruction = Box::new(DepositCpiBuilderInstruction {
             __program: program,
-            signer: None,
+            admin: None,
             pool: None,
             swap_curve: None,
             pool_authority: None,
@@ -693,8 +693,8 @@ impl<'a, 'b> DepositCpiBuilder<'a, 'b> {
         Self { instruction }
     }
     #[inline(always)]
-    pub fn signer(&mut self, signer: &'b solana_account_info::AccountInfo<'a>) -> &mut Self {
-        self.instruction.signer = Some(signer);
+    pub fn admin(&mut self, admin: &'b solana_account_info::AccountInfo<'a>) -> &mut Self {
+        self.instruction.admin = Some(admin);
         self
     }
     #[inline(always)]
@@ -894,7 +894,7 @@ impl<'a, 'b> DepositCpiBuilder<'a, 'b> {
         let instruction = DepositCpi {
             __program: self.instruction.__program,
 
-            signer: self.instruction.signer.expect("signer is not set"),
+            admin: self.instruction.admin.expect("admin is not set"),
 
             pool: self.instruction.pool.expect("pool is not set"),
 
@@ -978,7 +978,7 @@ impl<'a, 'b> DepositCpiBuilder<'a, 'b> {
 #[derive(Clone, Debug)]
 struct DepositCpiBuilderInstruction<'a, 'b> {
     __program: &'b solana_account_info::AccountInfo<'a>,
-    signer: Option<&'b solana_account_info::AccountInfo<'a>>,
+    admin: Option<&'b solana_account_info::AccountInfo<'a>>,
     pool: Option<&'b solana_account_info::AccountInfo<'a>>,
     swap_curve: Option<&'b solana_account_info::AccountInfo<'a>>,
     pool_authority: Option<&'b solana_account_info::AccountInfo<'a>>,
