@@ -1,3 +1,4 @@
+#![allow(clippy::all)]
 //! KDEX Curve Math Library
 //!
 //! This crate provides the core mathematical functions for KDEX (KDEX) AMM pools.

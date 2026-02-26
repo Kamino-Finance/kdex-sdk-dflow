@@ -1,3 +1,4 @@
+#![allow(clippy::all)]
 //! KDEX Client
 //!
 //! Generated Rust client for the KDEX AMM program.
@@ -11,7 +12,7 @@
 //! - Optional oracle quote calculation (with "oracle" feature)
 
 // Re-export generated code
-#[allow(unused_imports, clippy::io_other_error)]
+#[allow(unused_imports)]
 mod _generated;
 
 pub use _generated::*;
