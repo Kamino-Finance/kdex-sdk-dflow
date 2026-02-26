@@ -37,6 +37,9 @@ pub enum CurveUserParameters {
         /// Price offset in basis points (can be negative, default 0)
         /// Shifts the oracle price: adjusted = oracle * (10000 + offset) / 10000
         price_offset_bps: i64,
+        /// Score factor in basis points (default 0)
+        /// Widens spread per score unit: effective = base * (10000 + score * factor) / 10000
+        score_factor_bps: u64,
     },
     InventorySkewOracle {
         #[cfg_attr(
@@ -59,5 +62,8 @@ pub enum CurveUserParameters {
         /// Price offset in basis points (can be negative, default 0)
         /// Shifts the oracle price: adjusted = oracle * (10000 + offset) / 10000
         price_offset_bps: i64,
+        /// Score factor in basis points (default 0)
+        /// Widens spread per score unit: effective = base * (10000 + score * factor) / 10000
+        score_factor_bps: u64,
     },
 }

@@ -101,6 +101,7 @@ fn main() -> anyhow::Result<()> {
     let in_amount = 1_000_000_000; // 1 SOL
     println!("\nGetting quote for {} SOL...", in_amount as f64 / 1e9);
 
+    let score = 0u8; // Default: no spread widening
     let quote = if is_oracle {
         amm.quote_oracle(
             &QuoteParams {
@@ -110,14 +111,18 @@ fn main() -> anyhow::Result<()> {
                 swap_mode: SwapMode::ExactIn,
             },
             &oracle_accounts_map,
+            score,
         )?
     } else {
-        amm.quote(&QuoteParams {
-            input_mint: mints[0],
-            output_mint: mints[1],
-            amount: in_amount,
-            swap_mode: SwapMode::ExactIn,
-        })?
+        amm.quote_with_score(
+            &QuoteParams {
+                input_mint: mints[0],
+                output_mint: mints[1],
+                amount: in_amount,
+                swap_mode: SwapMode::ExactIn,
+            },
+            score,
+        )?
     };
 
     // Note: DFlow Quote only contains in_amount and out_amount
@@ -145,14 +150,18 @@ fn main() -> anyhow::Result<()> {
                 swap_mode: SwapMode::ExactIn,
             },
             &oracle_accounts_map,
+            score,
         )?
     } else {
-        amm.quote(&QuoteParams {
-            input_mint: mints[1],
-            output_mint: mints[0],
-            amount: in_amount,
-            swap_mode: SwapMode::ExactIn,
-        })?
+        amm.quote_with_score(
+            &QuoteParams {
+                input_mint: mints[1],
+                output_mint: mints[0],
+                amount: in_amount,
+                swap_mode: SwapMode::ExactIn,
+            },
+            score,
+        )?
     };
 
     println!("\nReverse Quote Result:");

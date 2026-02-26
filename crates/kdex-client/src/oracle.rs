@@ -386,7 +386,6 @@ pub fn calculate_inventory_skew_quote(
     )
     .map_err(|e| OracleError::CurveError(e.to_string()))?;
 
-    // Check if there's sufficient liquidity in the destination vault
     if swap_result.destination_amount_swapped > destination_vault_amount as u128 {
         return Err(OracleError::InsufficientLiquidity {
             required: swap_result.destination_amount_swapped as u64,

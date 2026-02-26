@@ -64,7 +64,10 @@ impl Withdraw {
         remaining_accounts: &[solana_instruction::AccountMeta],
     ) -> solana_instruction::Instruction {
         let mut accounts = Vec::with_capacity(19 + remaining_accounts.len());
-        accounts.push(solana_instruction::AccountMeta::new(self.signer, true));
+        accounts.push(solana_instruction::AccountMeta::new_readonly(
+            self.signer,
+            true,
+        ));
         accounts.push(solana_instruction::AccountMeta::new(self.pool, false));
         accounts.push(solana_instruction::AccountMeta::new_readonly(
             self.swap_curve,
@@ -189,7 +192,7 @@ impl WithdrawInstructionArgs {
 ///
 /// ### Accounts:
 ///
-///   0. `[writable, signer]` signer
+///   0. `[signer]` signer
 ///   1. `[writable]` pool
 ///   2. `[]` swap_curve
 ///   3. `[]` pool_authority
@@ -569,7 +572,10 @@ impl<'a, 'b> WithdrawCpi<'a, 'b> {
         remaining_accounts: &[(&'b solana_account_info::AccountInfo<'a>, bool, bool)],
     ) -> solana_program_error::ProgramResult {
         let mut accounts = Vec::with_capacity(19 + remaining_accounts.len());
-        accounts.push(solana_instruction::AccountMeta::new(*self.signer.key, true));
+        accounts.push(solana_instruction::AccountMeta::new_readonly(
+            *self.signer.key,
+            true,
+        ));
         accounts.push(solana_instruction::AccountMeta::new(*self.pool.key, false));
         accounts.push(solana_instruction::AccountMeta::new_readonly(
             *self.swap_curve.key,
@@ -692,7 +698,7 @@ impl<'a, 'b> WithdrawCpi<'a, 'b> {
 ///
 /// ### Accounts:
 ///
-///   0. `[writable, signer]` signer
+///   0. `[signer]` signer
 ///   1. `[writable]` pool
 ///   2. `[]` swap_curve
 ///   3. `[]` pool_authority

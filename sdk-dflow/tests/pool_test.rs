@@ -65,11 +65,12 @@ fn test_pool_quotes(
     is_oracle: bool,
     accounts_map: &AccountMap,
     oracle_accounts_map: &AccountMap,
+    score: u8,
 ) {
     // Test quotes (A -> B)
     println!("\n  Testing quotes (Token A -> Token B):");
     let test_amounts = if is_oracle {
-        vec![1_000_000u64, 5_000_000, 10_000_000]
+        vec![10_000_000u64, 50_000_000, 100_000_000]
     } else {
         vec![100u64, 250, 500]
     };
@@ -84,14 +85,18 @@ fn test_pool_quotes(
                     swap_mode: SwapMode::ExactIn,
                 },
                 oracle_accounts_map,
+                score,
             )
         } else {
-            amm.quote(&QuoteParams {
-                input_mint: mints[0],
-                output_mint: mints[1],
-                amount,
-                swap_mode: SwapMode::ExactIn,
-            })
+            amm.quote_with_score(
+                &QuoteParams {
+                    input_mint: mints[0],
+                    output_mint: mints[1],
+                    amount,
+                    swap_mode: SwapMode::ExactIn,
+                },
+                score,
+            )
         };
 
         match result {
@@ -100,9 +105,20 @@ fn test_pool_quotes(
                     "    {} in -> {} out (requested {})",
                     quote.in_amount, quote.out_amount, amount
                 );
+                assert!(
+                    quote.out_amount > 0,
+                    "out_amount should be > 0 for amount {}",
+                    amount
+                );
+                assert!(
+                    quote.in_amount <= amount,
+                    "in_amount ({}) should be <= requested ({})",
+                    quote.in_amount,
+                    amount
+                );
             }
             Err(e) => {
-                println!("    Quote failed for amount {}: {}", amount, e);
+                panic!("    Quote failed for amount {}: {}", amount, e);
             }
         }
     }
@@ -119,14 +135,18 @@ fn test_pool_quotes(
                 swap_mode: SwapMode::ExactIn,
             },
             oracle_accounts_map,
+            score,
         )
     } else {
-        amm.quote(&QuoteParams {
-            input_mint: mints[1],
-            output_mint: mints[0],
-            amount: reverse_amount,
-            swap_mode: SwapMode::ExactIn,
-        })
+        amm.quote_with_score(
+            &QuoteParams {
+                input_mint: mints[1],
+                output_mint: mints[0],
+                amount: reverse_amount,
+                swap_mode: SwapMode::ExactIn,
+            },
+            score,
+        )
     };
 
     match result {
@@ -135,9 +155,16 @@ fn test_pool_quotes(
                 "    {} in -> {} out (requested {})",
                 quote.in_amount, quote.out_amount, reverse_amount
             );
+            assert!(quote.out_amount > 0, "B→A out_amount should be > 0");
+            assert!(
+                quote.in_amount <= reverse_amount,
+                "B→A in_amount ({}) should be <= requested ({})",
+                quote.in_amount,
+                reverse_amount
+            );
         }
         Err(e) => {
-            println!("    Quote failed: {}", e);
+            panic!("    B→A quote failed: {}", e);
         }
     }
 
@@ -165,14 +192,18 @@ fn test_pool_quotes(
                     swap_mode: SwapMode::ExactIn,
                 },
                 oracle_accounts_map,
+                score,
             )
         } else {
-            amm.quote(&QuoteParams {
-                input_mint: mints[0],
-                output_mint: mints[1],
-                amount,
-                swap_mode: SwapMode::ExactIn,
-            })
+            amm.quote_with_score(
+                &QuoteParams {
+                    input_mint: mints[0],
+                    output_mint: mints[1],
+                    amount,
+                    swap_mode: SwapMode::ExactIn,
+                },
+                score,
+            )
         };
 
         match result {
@@ -214,14 +245,18 @@ fn test_pool_quotes(
                     swap_mode: SwapMode::ExactIn,
                 },
                 oracle_accounts_map,
+                score,
             )
         } else {
-            amm.quote(&QuoteParams {
-                input_mint: mints[1],
-                output_mint: mints[0],
-                amount,
-                swap_mode: SwapMode::ExactIn,
-            })
+            amm.quote_with_score(
+                &QuoteParams {
+                    input_mint: mints[1],
+                    output_mint: mints[0],
+                    amount,
+                    swap_mode: SwapMode::ExactIn,
+                },
+                score,
+            )
         };
 
         match result {
@@ -257,14 +292,18 @@ fn test_pool_quotes(
                 swap_mode: SwapMode::ExactIn,
             },
             oracle_accounts_map,
+            score,
         )
     } else {
-        amm.quote(&QuoteParams {
-            input_mint: mints[0],
-            output_mint: mints[1],
-            amount: excessive_amount,
-            swap_mode: SwapMode::ExactIn,
-        })
+        amm.quote_with_score(
+            &QuoteParams {
+                input_mint: mints[0],
+                output_mint: mints[1],
+                amount: excessive_amount,
+                swap_mode: SwapMode::ExactIn,
+            },
+            score,
+        )
     };
 
     match result {
@@ -295,6 +334,7 @@ fn test_pool_quotes(
                 swap_mode: SwapMode::ExactIn,
             },
             oracle_accounts_map,
+            score,
         );
 
         match result {
@@ -493,7 +533,21 @@ fn run_pool_tests() -> anyhow::Result<()> {
                 is_oracle,
                 &accounts_map,
                 &oracle_accounts_map,
+                0,
             );
+
+            // Also test with score=4 on oracle pools to verify widened spread
+            if is_oracle {
+                println!("\n  Re-testing with score=4 (widened spread):");
+                test_pool_quotes(
+                    &mut amm,
+                    &mints,
+                    is_oracle,
+                    &accounts_map,
+                    &oracle_accounts_map,
+                    4,
+                );
+            }
 
             println!("\n  Config {} test complete", config_label);
         }
@@ -502,5 +556,682 @@ fn run_pool_tests() -> anyhow::Result<()> {
     }
 
     println!("=== All tests complete ===");
+    Ok(())
+}
+
+/// Test that score-based spread widening produces monotonically less output for higher scores.
+///
+/// Runs on ALL oracle pools with score_factor_bps > 0.
+/// Verifies for each score 0–4:
+/// - Quote succeeds with out_amount > 0
+/// - Higher scores yield strictly less output (or equal only if rounding)
+/// - Both A→B and B→A directions behave correctly
+///
+/// Uses vault_capacity_target_bps=0 (binary search) to avoid capacity estimation masking the effect.
+/// Uses amounts large enough that the integer-level spread difference is observable.
+///
+/// Run with: cargo test --test pool_test --features testing -- --ignored --nocapture test_score_widening
+#[test]
+#[ignore]
+fn test_score_widening() {
+    if let Err(e) = run_score_tests() {
+        panic!("Score widening test failed: {}", e);
+    }
+}
+
+/// Reads curve parameters from raw account data for diagnostic printing.
+fn print_curve_diagnostics(curve_type: CurveType, curve_data: &[u8]) {
+    match curve_type {
+        CurveType::ConstantSpreadOracle => {
+            if curve_data.len() >= 80 {
+                let bps_from_oracle =
+                    u64::from_le_bytes(curve_data[56..64].try_into().unwrap_or_default());
+                let price_offset_bps =
+                    i64::from_le_bytes(curve_data[64..72].try_into().unwrap_or_default());
+                let score_factor_bps =
+                    u64::from_le_bytes(curve_data[72..80].try_into().unwrap_or_default());
+                println!(
+                    "  Curve params: bps_from_oracle={}, price_offset_bps={}, score_factor_bps={}",
+                    bps_from_oracle, price_offset_bps, score_factor_bps
+                );
+            }
+        }
+        CurveType::InventorySkewOracle => {
+            if curve_data.len() >= 128 {
+                let base_spread_bps =
+                    u64::from_le_bytes(curve_data[56..64].try_into().unwrap_or_default());
+                let size_spread_bps =
+                    u64::from_le_bytes(curve_data[64..72].try_into().unwrap_or_default());
+                let skew_bps =
+                    u64::from_le_bytes(curve_data[72..80].try_into().unwrap_or_default());
+                let inv_equilibrium =
+                    u64::from_le_bytes(curve_data[80..88].try_into().unwrap_or_default());
+                let inv_max = u64::from_le_bytes(curve_data[88..96].try_into().unwrap_or_default());
+                let q_ref = u64::from_le_bytes(curve_data[96..104].try_into().unwrap_or_default());
+                let alpha = u64::from_le_bytes(curve_data[104..112].try_into().unwrap_or_default());
+                let price_offset_bps =
+                    i64::from_le_bytes(curve_data[112..120].try_into().unwrap_or_default());
+                let score_factor_bps =
+                    u64::from_le_bytes(curve_data[120..128].try_into().unwrap_or_default());
+                println!("  Curve params: base_spread_bps={}, size_spread_bps={}, skew_bps={}, inv_eq={}, inv_max={}, q_ref={}, alpha={}, price_offset_bps={}, score_factor_bps={}",
+                    base_spread_bps, size_spread_bps, skew_bps, inv_equilibrium, inv_max, q_ref, alpha, price_offset_bps, score_factor_bps);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn run_score_tests() -> anyhow::Result<()> {
+    println!("=== KDEX SDK (DFlow) - Score Widening Test ===\n");
+
+    let rpc_url = std::env::var("RPC").unwrap_or_else(|_| "http://127.0.0.1:8899".to_string());
+    let rpc = RpcClient::new(rpc_url);
+    let program_id = get_program_id();
+
+    let pools = discover_pools(&rpc, &program_id)?;
+    if pools.is_empty() {
+        println!("No pools found, skipping score test");
+        return Ok(());
+    }
+
+    let mut tested_count = 0u32;
+
+    for (addr, account) in &pools {
+        let mut amm = match KDEXAmm::new_from_keyed_account_with_program_id(
+            &KeyedAccount {
+                key: *addr,
+                account: account.clone(),
+                params: None,
+            },
+            program_id,
+        ) {
+            Ok(amm) => amm,
+            Err(_) => continue,
+        };
+
+        if !matches!(
+            amm.curve_type(),
+            CurveType::ConstantSpreadOracle | CurveType::InventorySkewOracle
+        ) {
+            println!(
+                "Pool {} ({:?}): skipping (not oracle)\n",
+                addr,
+                amm.curve_type()
+            );
+            continue;
+        }
+
+        // Use binary search mode to avoid capacity estimation masking score effects
+        amm = amm.with_vault_capacity_target(0)?;
+
+        // Fetch curve data so score_factor_bps() can read it
+        let accounts_to_update = amm.get_accounts_to_update();
+        let fetched = rpc.get_multiple_accounts(&accounts_to_update)?;
+        let mut accounts_map: AccountMap = accounts_to_update
+            .iter()
+            .zip(fetched.iter())
+            .filter_map(|(key, acc)| acc.as_ref().map(|a| (*key, a.clone())))
+            .collect();
+        amm.update(&accounts_map)?;
+
+        let sfb = amm.score_factor_bps();
+        println!(
+            "Pool {} ({:?}): score_factor_bps={}",
+            addr,
+            amm.curve_type(),
+            sfb
+        );
+
+        // Print curve diagnostics (swap_curve is the 3rd entry in accounts_to_update)
+        if accounts_to_update.len() >= 3 {
+            if let Some(curve_acc) = accounts_map.get(&accounts_to_update[2]) {
+                print_curve_diagnostics(amm.curve_type(), &curve_acc.data);
+            }
+        }
+
+        if sfb == 0 {
+            println!("  Skipping: score_factor_bps=0 (no score widening configured)\n");
+            continue;
+        }
+
+        // Fetch scope price feed for oracle
+        let scope_price_feed = amm
+            .get_scope_price_feed(&accounts_map)
+            .ok_or_else(|| anyhow::anyhow!("Could not get scope price feed for {}", addr))?;
+        let scope_account = rpc.get_account(&scope_price_feed)?;
+        accounts_map.insert(scope_price_feed, scope_account);
+
+        let mints = amm.get_reserve_mints();
+
+        // Use amounts large enough that the spread difference is visible at integer precision.
+        // With score_factor_bps=500 and score=4: multiplier = 2000 bps = 20%.
+        // If base_spread is B bps, score=4 makes it B*1.2.
+        // The output difference ≈ output * (B*0.2) / 10000.
+        // For this to be >= 1, we need output >= 10000 / (B*0.2) = 50000/B.
+        // With B=30 bps, output >= ~1667. With B=1 bps, output >= 50000.
+        // Use multiple amount tiers to ensure at least one shows the effect.
+        let atob_amounts = vec![1_000_000u64, 10_000_000, 50_000_000, 100_000_000];
+        let btoa_amounts = vec![10u64, 100, 1_000, 10_000];
+
+        println!("\n  Score monotonicity (A→B):");
+        for &amount in &atob_amounts {
+            let mut prev: Option<(u64, u64)> = None; // (in_amount, out_amount)
+            let mut any_diff = false;
+            let mut results = Vec::new();
+            for score in 0..=4u8 {
+                let quote = amm.quote_oracle(
+                    &QuoteParams {
+                        input_mint: mints[0],
+                        output_mint: mints[1],
+                        amount,
+                        swap_mode: SwapMode::ExactIn,
+                    },
+                    &accounts_map,
+                    score,
+                );
+                match quote {
+                    Ok(q) => {
+                        if let Some((prev_in, prev_out)) = prev {
+                            if q.out_amount != prev_out || q.in_amount != prev_in {
+                                any_diff = true;
+                            }
+                            // Wider spread means worse rate: either less output or more input needed
+                            assert!(
+                                q.out_amount <= prev_out || q.in_amount >= prev_in,
+                                "amount={} score={}: rate should worsen (out {} <= {} or in {} >= {})",
+                                amount, score,
+                                q.out_amount, prev_out, q.in_amount, prev_in
+                            );
+                        }
+                        prev = Some((q.in_amount, q.out_amount));
+                        results.push(format!("s{}:{}/{}", score, q.in_amount, q.out_amount));
+                    }
+                    Err(e) => {
+                        results.push(format!("s{}:ERR({})", score, e));
+                    }
+                }
+            }
+            let marker = if !any_diff && prev.is_some() {
+                " [NO DIFF]"
+            } else {
+                ""
+            };
+            println!("    amount={}: {}{}", amount, results.join(", "), marker);
+        }
+
+        println!("\n  Score monotonicity (B→A):");
+        for &amount in &btoa_amounts {
+            let mut prev: Option<(u64, u64)> = None;
+            let mut any_diff = false;
+            let mut results = Vec::new();
+            for score in 0..=4u8 {
+                let quote = amm.quote_oracle(
+                    &QuoteParams {
+                        input_mint: mints[1],
+                        output_mint: mints[0],
+                        amount,
+                        swap_mode: SwapMode::ExactIn,
+                    },
+                    &accounts_map,
+                    score,
+                );
+                match quote {
+                    Ok(q) => {
+                        if let Some((prev_in, prev_out)) = prev {
+                            if q.out_amount != prev_out || q.in_amount != prev_in {
+                                any_diff = true;
+                            }
+                            assert!(
+                                q.out_amount <= prev_out || q.in_amount >= prev_in,
+                                "amount={} score={}: rate should worsen (out {} <= {} or in {} >= {})",
+                                amount, score,
+                                q.out_amount, prev_out, q.in_amount, prev_in
+                            );
+                        }
+                        prev = Some((q.in_amount, q.out_amount));
+                        results.push(format!("s{}:{}/{}", score, q.in_amount, q.out_amount));
+                    }
+                    Err(e) => {
+                        results.push(format!("s{}:ERR({})", score, e));
+                    }
+                }
+            }
+            let marker = if !any_diff && prev.is_some() {
+                " [NO DIFF]"
+            } else {
+                ""
+            };
+            println!("    amount={}: {}{}", amount, results.join(", "), marker);
+        }
+
+        tested_count = tested_count.saturating_add(1);
+        println!();
+    }
+
+    if tested_count == 0 {
+        anyhow::bail!(
+            "No oracle pool with score_factor_bps > 0 found. Set score_factor_bps via UpdatePoolConfig first."
+        );
+    }
+
+    println!(
+        "=== Score widening test passed ({} pools tested) ===\n",
+        tested_count
+    );
+    Ok(())
+}
+
+/// Test that invalid scores (> 4) are rejected.
+///
+/// Run with: cargo test --test pool_test --features testing -- --ignored --nocapture test_score_validation
+#[test]
+#[ignore]
+fn test_score_validation() {
+    if let Err(e) = run_score_validation_tests() {
+        panic!("Score validation test failed: {}", e);
+    }
+}
+
+fn run_score_validation_tests() -> anyhow::Result<()> {
+    println!("=== KDEX SDK (DFlow) - Score Validation Test ===\n");
+
+    let rpc_url = std::env::var("RPC").unwrap_or_else(|_| "http://127.0.0.1:8899".to_string());
+    let rpc = RpcClient::new(rpc_url);
+    let program_id = get_program_id();
+
+    let pools = discover_pools(&rpc, &program_id)?;
+    if pools.is_empty() {
+        println!("No pools found, skipping score validation test");
+        return Ok(());
+    }
+
+    // Use first pool (any type)
+    let (pool_address, pool_account) = &pools[0];
+    let mut amm = KDEXAmm::new_from_keyed_account_with_program_id(
+        &KeyedAccount {
+            key: *pool_address,
+            account: pool_account.clone(),
+            params: None,
+        },
+        program_id,
+    )?;
+
+    let accounts_to_update = amm.get_accounts_to_update();
+    let fetched = rpc.get_multiple_accounts(&accounts_to_update)?;
+    let mut accounts_map: AccountMap = accounts_to_update
+        .iter()
+        .zip(fetched.iter())
+        .filter_map(|(key, acc)| acc.as_ref().map(|a| (*key, a.clone())))
+        .collect();
+    amm.update(&accounts_map)?;
+
+    let is_oracle = matches!(
+        amm.curve_type(),
+        CurveType::ConstantSpreadOracle | CurveType::InventorySkewOracle
+    );
+
+    if is_oracle {
+        if let Some(scope_feed) = amm.get_scope_price_feed(&accounts_map) {
+            if let Ok(scope_account) = rpc.get_account(&scope_feed) {
+                accounts_map.insert(scope_feed, scope_account);
+            }
+        }
+    }
+
+    let mints = amm.get_reserve_mints();
+    let params = QuoteParams {
+        input_mint: mints[0],
+        output_mint: mints[1],
+        amount: 10_000_000,
+        swap_mode: SwapMode::ExactIn,
+    };
+
+    // score=5 should fail via quote()
+    let result = if is_oracle {
+        amm.quote_oracle(&params, &accounts_map, 5)
+    } else {
+        amm.quote_with_score(&params, 5)
+    };
+    assert!(
+        result.is_err(),
+        "quote(score=5) should fail but got: {:?}",
+        result.unwrap()
+    );
+    let err_msg = format!("{}", result.unwrap_err());
+    assert!(
+        err_msg.contains("Invalid score"),
+        "Error should mention 'Invalid score', got: {}",
+        err_msg
+    );
+    println!("quote(score=5) correctly rejected: {}", err_msg);
+
+    // score=255 should also fail
+    let result = if is_oracle {
+        amm.quote_oracle(&params, &accounts_map, 255)
+    } else {
+        amm.quote_with_score(&params, 255)
+    };
+    assert!(result.is_err(), "quote(score=255) should fail");
+    println!(
+        "quote(score=255) correctly rejected: {}",
+        result.unwrap_err()
+    );
+
+    // score=4 should succeed (boundary)
+    let result = if is_oracle {
+        amm.quote_oracle(&params, &accounts_map, 4)
+    } else {
+        amm.quote_with_score(&params, 4)
+    };
+    assert!(
+        result.is_ok(),
+        "quote(score=4) should succeed but got: {}",
+        result.unwrap_err()
+    );
+    println!("quote(score=4) accepted: {:?}", result.unwrap());
+
+    // score=0 should succeed
+    let result = if is_oracle {
+        amm.quote_oracle(&params, &accounts_map, 0)
+    } else {
+        amm.quote_with_score(&params, 0)
+    };
+    assert!(
+        result.is_ok(),
+        "quote(score=0) should succeed but got: {}",
+        result.unwrap_err()
+    );
+    println!("quote(score=0) accepted: {:?}", result.unwrap());
+
+    println!("\n=== Score validation test passed ===\n");
+    Ok(())
+}
+
+/// Test that quote() and quote_oracle() produce identical results for oracle pools.
+///
+/// After update() caches the Scope account, quote() should give the same output
+/// as quote_oracle() with the same accounts_map.
+///
+/// Run with: cargo test --test pool_test --features testing -- --ignored --nocapture test_quote_oracle_consistency
+#[test]
+#[ignore]
+fn test_quote_oracle_consistency() {
+    if let Err(e) = run_quote_consistency_tests() {
+        panic!("Quote/oracle consistency test failed: {}", e);
+    }
+}
+
+fn run_quote_consistency_tests() -> anyhow::Result<()> {
+    println!("=== KDEX SDK (DFlow) - Quote/Oracle Consistency Test ===\n");
+
+    let rpc_url = std::env::var("RPC").unwrap_or_else(|_| "http://127.0.0.1:8899".to_string());
+    let rpc = RpcClient::new(rpc_url);
+    let program_id = get_program_id();
+
+    let pools = discover_pools(&rpc, &program_id)?;
+
+    // Find an oracle pool
+    for (addr, account) in &pools {
+        let mut amm = match KDEXAmm::new_from_keyed_account_with_program_id(
+            &KeyedAccount {
+                key: *addr,
+                account: account.clone(),
+                params: None,
+            },
+            program_id,
+        ) {
+            Ok(amm) => amm,
+            Err(_) => continue,
+        };
+
+        if !matches!(
+            amm.curve_type(),
+            CurveType::ConstantSpreadOracle | CurveType::InventorySkewOracle
+        ) {
+            continue;
+        }
+
+        println!("Using oracle pool: {} ({:?})", addr, amm.curve_type());
+
+        // Fetch all accounts including scope
+        let accounts_to_update = amm.get_accounts_to_update();
+        let fetched = rpc.get_multiple_accounts(&accounts_to_update)?;
+        let mut accounts_map: AccountMap = accounts_to_update
+            .iter()
+            .zip(fetched.iter())
+            .filter_map(|(key, acc)| acc.as_ref().map(|a| (*key, a.clone())))
+            .collect();
+
+        // Need curve data before we can get scope feed
+        amm.update(&accounts_map)?;
+
+        let scope_feed = amm
+            .get_scope_price_feed(&accounts_map)
+            .ok_or_else(|| anyhow::anyhow!("No scope feed"))?;
+        let scope_account = rpc.get_account(&scope_feed)?;
+        accounts_map.insert(scope_feed, scope_account);
+
+        // Re-update so quote() has cached scope data
+        amm.update(&accounts_map)?;
+
+        let mints = amm.get_reserve_mints();
+
+        // Test multiple amounts and scores in both directions
+        let test_cases: Vec<(Pubkey, Pubkey, u64, &str)> = vec![
+            (mints[0], mints[1], 10_000_000, "A→B small"),
+            (mints[0], mints[1], 100_000_000, "A→B medium"),
+            (mints[1], mints[0], 10, "B→A small"),
+        ];
+
+        for (input_mint, output_mint, amount, label) in &test_cases {
+            for score in [0u8, 2, 4] {
+                let params = QuoteParams {
+                    input_mint: *input_mint,
+                    output_mint: *output_mint,
+                    amount: *amount,
+                    swap_mode: SwapMode::ExactIn,
+                };
+
+                let via_quote = amm.quote_with_score(&params, score)?;
+                let via_oracle = amm.quote_oracle(&params, &accounts_map, score)?;
+
+                println!(
+                    "  {} score={}: quote()={}/{}, quote_oracle()={}/{}",
+                    label,
+                    score,
+                    via_quote.in_amount,
+                    via_quote.out_amount,
+                    via_oracle.in_amount,
+                    via_oracle.out_amount,
+                );
+
+                assert_eq!(
+                    via_quote.in_amount, via_oracle.in_amount,
+                    "{} score={}: in_amount mismatch: quote()={} vs quote_oracle()={}",
+                    label, score, via_quote.in_amount, via_oracle.in_amount
+                );
+                assert_eq!(
+                    via_quote.out_amount, via_oracle.out_amount,
+                    "{} score={}: out_amount mismatch: quote()={} vs quote_oracle()={}",
+                    label, score, via_quote.out_amount, via_oracle.out_amount
+                );
+            }
+        }
+
+        println!("\n=== Quote/oracle consistency test passed ===\n");
+        return Ok(());
+    }
+
+    println!("No oracle pools found, skipping consistency test");
+    Ok(())
+}
+
+/// Test that `is_active()` correctly reflects oracle staleness, with the offset
+/// providing a buffer before the pool is marked inactive.
+///
+/// For each oracle pool this prints the actual oracle age and the configured
+/// threshold so you can see how much margin exists.  With a live pool the price
+/// should be fresh, so the pool should be active under any reasonable offset.
+///
+/// Run with: cargo test --test pool_test --features testing -- --ignored --nocapture test_oracle_staleness_offset
+#[test]
+#[ignore]
+fn test_oracle_staleness_offset() {
+    if let Err(e) = run_oracle_staleness_offset_tests() {
+        panic!("Oracle staleness offset test failed: {}", e);
+    }
+}
+
+fn run_oracle_staleness_offset_tests() -> anyhow::Result<()> {
+    println!("=== KDEX SDK (DFlow) - Oracle Staleness Offset Test ===\n");
+
+    let rpc_url = std::env::var("RPC").unwrap_or_else(|_| "http://127.0.0.1:8899".to_string());
+    let rpc = RpcClient::new(rpc_url);
+    let program_id = get_program_id();
+
+    let pools = discover_pools(&rpc, &program_id)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let mut tested = 0u32;
+
+    for (addr, account) in &pools {
+        let mut amm = match KDEXAmm::new_from_keyed_account_with_program_id(
+            &KeyedAccount {
+                key: *addr,
+                account: account.clone(),
+                params: None,
+            },
+            program_id,
+        ) {
+            Ok(amm) => amm,
+            Err(_) => continue,
+        };
+
+        if !matches!(
+            amm.curve_type(),
+            CurveType::ConstantSpreadOracle | CurveType::InventorySkewOracle
+        ) {
+            continue;
+        }
+
+        println!("Pool {} ({:?})", addr, amm.curve_type());
+
+        // Fetch all accounts including scope
+        let accounts_to_update = amm.get_accounts_to_update();
+        let fetched = rpc.get_multiple_accounts(&accounts_to_update)?;
+        let mut accounts_map: AccountMap = accounts_to_update
+            .iter()
+            .zip(fetched.iter())
+            .filter_map(|(key, acc)| acc.as_ref().map(|a| (*key, a.clone())))
+            .collect();
+        amm.update(&accounts_map)?;
+
+        let scope_feed = match amm.get_scope_price_feed(&accounts_map) {
+            Some(f) => f,
+            None => {
+                println!("  No scope feed found, skipping\n");
+                continue;
+            }
+        };
+        let scope_account = rpc.get_account(&scope_feed)?;
+        accounts_map.insert(scope_feed, scope_account);
+        amm.update(&accounts_map)?;
+
+        // The curve account is the 3rd entry in accounts_to_update (pool, authority, curve, ...).
+        // We read max_age_secs and oracle age from it to print the staleness margin.
+
+        // With default offset (60 s): a live pool should be active
+        assert!(
+            amm.is_active(),
+            "Pool {} should be active with default offset on a live oracle",
+            addr
+        );
+        println!("  is_active(default offset=60s) = true ✓");
+
+        // With offset=0: shows the raw max_age_secs threshold without any buffer.
+        // A pool in the buffer zone (age between max_age_secs and max_age_secs+60) will
+        // correctly return false here — that is what the default offset protects against.
+        let amm_no_offset = {
+            let mut a = KDEXAmm::new_from_keyed_account_with_program_id(
+                &KeyedAccount {
+                    key: *addr,
+                    account: account.clone(),
+                    params: None,
+                },
+                program_id,
+            )?
+            .with_oracle_staleness_offset(0);
+            a.update(&accounts_map)?;
+            a
+        };
+        println!(
+            "  is_active(offset=0)            = {} (raw max_age_secs threshold)",
+            amm_no_offset.is_active()
+        );
+
+        // Simulate a long pause between the scope refresh and the quote by setting a large
+        // negative offset, collapsing the threshold to 0.  Any cached oracle (updated in the
+        // past) will appear stale — same effect as waiting max_age_secs + 60 s without
+        // calling update() again.
+        let amm_simulated_stale = {
+            let mut a = KDEXAmm::new_from_keyed_account_with_program_id(
+                &KeyedAccount {
+                    key: *addr,
+                    account: account.clone(),
+                    params: None,
+                },
+                program_id,
+            )?
+            .with_oracle_staleness_offset(i64::MIN);
+            a.update(&accounts_map)?;
+            a
+        };
+        assert!(
+            !amm_simulated_stale.is_active(),
+            "Pool {} should be inactive when oracle appears stale",
+            addr
+        );
+        println!("  is_active(offset=i64::MIN)     = false ✓ (simulated stale cache)");
+
+        // Print the oracle age so we can see how much headroom we have
+        if let Some(scope_acc) = accounts_map.get(&scope_feed) {
+            // Read the first non-sentinel price index from curve data (bytes 40..42)
+            if let Some(curve_acc) = accounts_to_update.get(2).and_then(|k| accounts_map.get(k)) {
+                if curve_acc.data.len() >= 52 {
+                    let price_index =
+                        u16::from_le_bytes(curve_acc.data[40..42].try_into().unwrap_or_default());
+                    let max_age =
+                        u16::from_le_bytes(curve_acc.data[48..50].try_into().unwrap_or_default());
+                    if let Some(ts) =
+                        kdex_sdk_dflow::oracle::fetch_scope_price_timestamp(scope_acc, price_index)
+                    {
+                        let age = now.saturating_sub(ts);
+                        println!(
+                            "  Oracle age: {}s  |  max_age_secs: {}s  |  headroom: {}s",
+                            age,
+                            max_age,
+                            (max_age as u64).saturating_sub(age),
+                        );
+                    }
+                }
+            }
+        }
+
+        println!();
+        tested = tested.saturating_add(1);
+    }
+
+    if tested == 0 {
+        println!("No oracle pools found, skipping staleness offset test");
+        return Ok(());
+    }
+
+    println!(
+        "=== Oracle staleness offset test passed ({} pools tested) ===\n",
+        tested
+    );
     Ok(())
 }

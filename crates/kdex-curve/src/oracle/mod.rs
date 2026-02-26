@@ -19,6 +19,12 @@ use crate::error::CurveError;
 /// Basis points denominator (10,000 = 100%)
 pub const BPS_DENOMINATOR: u128 = 10_000;
 
+/// Internal spread precision denominator (1000x BPS for sub-bps resolution)
+pub const SPREAD_PRECISION: u128 = 10_000_000;
+
+/// Scale factor: basis points → milli-basis-points
+pub const PRECISION_SCALE: u128 = 1_000;
+
 /// Maximum basis points value (100%)
 pub const MAX_BPS: u64 = 10_000;
 

@@ -8,11 +8,11 @@
 use borsh::BorshDeserialize;
 use borsh::BorshSerialize;
 
-pub const SWAP_DISCRIMINATOR: [u8; 8] = [248, 198, 158, 145, 225, 117, 135, 200];
+pub const SWAP2_DISCRIMINATOR: [u8; 8] = [65, 75, 63, 76, 235, 91, 91, 136];
 
 /// Accounts.
 #[derive(Debug)]
-pub struct Swap {
+pub struct Swap2 {
     pub signer: solana_pubkey::Pubkey,
 
     pub pool: solana_pubkey::Pubkey,
@@ -38,8 +38,8 @@ pub struct Swap {
     pub source_token_program: solana_pubkey::Pubkey,
     /// Token program for the destination mint
     pub destination_token_program: solana_pubkey::Pubkey,
-    /// Instructions sysvar
-    pub instruction_sysvar: solana_pubkey::Pubkey,
+    /// Score signer - validated in handler against allowed pubkeys
+    pub score_signer: solana_pubkey::Pubkey,
     /// Optional pool token fees account for front ends - if not present, all fees are sent to the trading fees account
     pub source_token_host_fees_account: Option<solana_pubkey::Pubkey>,
     /// Optional Scope price feed account (required for Oracle based curves)
@@ -50,15 +50,15 @@ pub struct Swap {
     pub program: solana_pubkey::Pubkey,
 }
 
-impl Swap {
-    pub fn instruction(&self, args: SwapInstructionArgs) -> solana_instruction::Instruction {
+impl Swap2 {
+    pub fn instruction(&self, args: Swap2InstructionArgs) -> solana_instruction::Instruction {
         self.instruction_with_remaining_accounts(args, &[])
     }
     #[allow(clippy::arithmetic_side_effects)]
     #[allow(clippy::vec_init_then_push)]
     pub fn instruction_with_remaining_accounts(
         &self,
-        args: SwapInstructionArgs,
+        args: Swap2InstructionArgs,
         remaining_accounts: &[solana_instruction::AccountMeta],
     ) -> solana_instruction::Instruction {
         let mut accounts = Vec::with_capacity(18 + remaining_accounts.len());
@@ -112,8 +112,8 @@ impl Swap {
             false,
         ));
         accounts.push(solana_instruction::AccountMeta::new_readonly(
-            self.instruction_sysvar,
-            false,
+            self.score_signer,
+            true,
         ));
         if let Some(source_token_host_fees_account) = self.source_token_host_fees_account {
             accounts.push(solana_instruction::AccountMeta::new(
@@ -146,7 +146,7 @@ impl Swap {
             false,
         ));
         accounts.extend_from_slice(remaining_accounts);
-        let mut data = SwapInstructionData::new().try_to_vec().unwrap();
+        let mut data = Swap2InstructionData::new().try_to_vec().unwrap();
         let mut args = args.try_to_vec().unwrap();
         data.append(&mut args);
 
@@ -160,14 +160,14 @@ impl Swap {
 
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct SwapInstructionData {
+pub struct Swap2InstructionData {
     discriminator: [u8; 8],
 }
 
-impl SwapInstructionData {
+impl Swap2InstructionData {
     pub fn new() -> Self {
         Self {
-            discriminator: [248, 198, 158, 145, 225, 117, 135, 200],
+            discriminator: [65, 75, 63, 76, 235, 91, 91, 136],
         }
     }
 
@@ -176,7 +176,7 @@ impl SwapInstructionData {
     }
 }
 
-impl Default for SwapInstructionData {
+impl Default for Swap2InstructionData {
     fn default() -> Self {
         Self::new()
     }
@@ -184,18 +184,19 @@ impl Default for SwapInstructionData {
 
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct SwapInstructionArgs {
+pub struct Swap2InstructionArgs {
     pub amount_in: u64,
     pub minimum_amount_out: u64,
+    pub score: u8,
 }
 
-impl SwapInstructionArgs {
+impl Swap2InstructionArgs {
     pub(crate) fn try_to_vec(&self) -> Result<Vec<u8>, std::io::Error> {
         borsh::to_vec(self)
     }
 }
 
-/// Instruction builder for `Swap`.
+/// Instruction builder for `Swap2`.
 ///
 /// ### Accounts:
 ///
@@ -212,13 +213,13 @@ impl SwapInstructionArgs {
 ///   10. `[writable]` destination_user_ata
 ///   11. `[]` source_token_program
 ///   12. `[]` destination_token_program
-///   13. `[optional]` instruction_sysvar (default to `Sysvar1nstructions1111111111111111111111111`)
+///   13. `[signer]` score_signer
 ///   14. `[writable, optional]` source_token_host_fees_account
 ///   15. `[optional]` scope_price_feed
 ///   16. `[]` event_authority
 ///   17. `[]` program
 #[derive(Clone, Debug, Default)]
-pub struct SwapBuilder {
+pub struct Swap2Builder {
     signer: Option<solana_pubkey::Pubkey>,
     pool: Option<solana_pubkey::Pubkey>,
     swap_curve: Option<solana_pubkey::Pubkey>,
@@ -232,17 +233,18 @@ pub struct SwapBuilder {
     destination_user_ata: Option<solana_pubkey::Pubkey>,
     source_token_program: Option<solana_pubkey::Pubkey>,
     destination_token_program: Option<solana_pubkey::Pubkey>,
-    instruction_sysvar: Option<solana_pubkey::Pubkey>,
+    score_signer: Option<solana_pubkey::Pubkey>,
     source_token_host_fees_account: Option<solana_pubkey::Pubkey>,
     scope_price_feed: Option<solana_pubkey::Pubkey>,
     event_authority: Option<solana_pubkey::Pubkey>,
     program: Option<solana_pubkey::Pubkey>,
     amount_in: Option<u64>,
     minimum_amount_out: Option<u64>,
+    score: Option<u8>,
     __remaining_accounts: Vec<solana_instruction::AccountMeta>,
 }
 
-impl SwapBuilder {
+impl Swap2Builder {
     pub fn new() -> Self {
         Self::default()
     }
@@ -328,11 +330,10 @@ impl SwapBuilder {
         self.destination_token_program = Some(destination_token_program);
         self
     }
-    /// `[optional account, default to 'Sysvar1nstructions1111111111111111111111111']`
-    /// Instructions sysvar
+    /// Score signer - validated in handler against allowed pubkeys
     #[inline(always)]
-    pub fn instruction_sysvar(&mut self, instruction_sysvar: solana_pubkey::Pubkey) -> &mut Self {
-        self.instruction_sysvar = Some(instruction_sysvar);
+    pub fn score_signer(&mut self, score_signer: solana_pubkey::Pubkey) -> &mut Self {
+        self.score_signer = Some(score_signer);
         self
     }
     /// `[optional account]`
@@ -375,6 +376,11 @@ impl SwapBuilder {
         self.minimum_amount_out = Some(minimum_amount_out);
         self
     }
+    #[inline(always)]
+    pub fn score(&mut self, score: u8) -> &mut Self {
+        self.score = Some(score);
+        self
+    }
     /// Add an additional account to the instruction.
     #[inline(always)]
     pub fn add_remaining_account(&mut self, account: solana_instruction::AccountMeta) -> &mut Self {
@@ -392,7 +398,7 @@ impl SwapBuilder {
     }
     #[allow(clippy::clone_on_copy)]
     pub fn instruction(&self) -> solana_instruction::Instruction {
-        let accounts = Swap {
+        let accounts = Swap2 {
             signer: self.signer.expect("signer is not set"),
             pool: self.pool.expect("pool is not set"),
             swap_curve: self.swap_curve.expect("swap_curve is not set"),
@@ -416,28 +422,27 @@ impl SwapBuilder {
             destination_token_program: self
                 .destination_token_program
                 .expect("destination_token_program is not set"),
-            instruction_sysvar: self.instruction_sysvar.unwrap_or(solana_pubkey::pubkey!(
-                "Sysvar1nstructions1111111111111111111111111"
-            )),
+            score_signer: self.score_signer.expect("score_signer is not set"),
             source_token_host_fees_account: self.source_token_host_fees_account,
             scope_price_feed: self.scope_price_feed,
             event_authority: self.event_authority.expect("event_authority is not set"),
             program: self.program.expect("program is not set"),
         };
-        let args = SwapInstructionArgs {
+        let args = Swap2InstructionArgs {
             amount_in: self.amount_in.clone().expect("amount_in is not set"),
             minimum_amount_out: self
                 .minimum_amount_out
                 .clone()
                 .expect("minimum_amount_out is not set"),
+            score: self.score.clone().expect("score is not set"),
         };
 
         accounts.instruction_with_remaining_accounts(args, &self.__remaining_accounts)
     }
 }
 
-/// `swap` CPI accounts.
-pub struct SwapCpiAccounts<'a, 'b> {
+/// `swap2` CPI accounts.
+pub struct Swap2CpiAccounts<'a, 'b> {
     pub signer: &'b solana_account_info::AccountInfo<'a>,
 
     pub pool: &'b solana_account_info::AccountInfo<'a>,
@@ -463,8 +468,8 @@ pub struct SwapCpiAccounts<'a, 'b> {
     pub source_token_program: &'b solana_account_info::AccountInfo<'a>,
     /// Token program for the destination mint
     pub destination_token_program: &'b solana_account_info::AccountInfo<'a>,
-    /// Instructions sysvar
-    pub instruction_sysvar: &'b solana_account_info::AccountInfo<'a>,
+    /// Score signer - validated in handler against allowed pubkeys
+    pub score_signer: &'b solana_account_info::AccountInfo<'a>,
     /// Optional pool token fees account for front ends - if not present, all fees are sent to the trading fees account
     pub source_token_host_fees_account: Option<&'b solana_account_info::AccountInfo<'a>>,
     /// Optional Scope price feed account (required for Oracle based curves)
@@ -475,8 +480,8 @@ pub struct SwapCpiAccounts<'a, 'b> {
     pub program: &'b solana_account_info::AccountInfo<'a>,
 }
 
-/// `swap` CPI instruction.
-pub struct SwapCpi<'a, 'b> {
+/// `swap2` CPI instruction.
+pub struct Swap2Cpi<'a, 'b> {
     /// The program to invoke.
     pub __program: &'b solana_account_info::AccountInfo<'a>,
 
@@ -505,8 +510,8 @@ pub struct SwapCpi<'a, 'b> {
     pub source_token_program: &'b solana_account_info::AccountInfo<'a>,
     /// Token program for the destination mint
     pub destination_token_program: &'b solana_account_info::AccountInfo<'a>,
-    /// Instructions sysvar
-    pub instruction_sysvar: &'b solana_account_info::AccountInfo<'a>,
+    /// Score signer - validated in handler against allowed pubkeys
+    pub score_signer: &'b solana_account_info::AccountInfo<'a>,
     /// Optional pool token fees account for front ends - if not present, all fees are sent to the trading fees account
     pub source_token_host_fees_account: Option<&'b solana_account_info::AccountInfo<'a>>,
     /// Optional Scope price feed account (required for Oracle based curves)
@@ -516,14 +521,14 @@ pub struct SwapCpi<'a, 'b> {
 
     pub program: &'b solana_account_info::AccountInfo<'a>,
     /// The arguments for the instruction.
-    pub __args: SwapInstructionArgs,
+    pub __args: Swap2InstructionArgs,
 }
 
-impl<'a, 'b> SwapCpi<'a, 'b> {
+impl<'a, 'b> Swap2Cpi<'a, 'b> {
     pub fn new(
         program: &'b solana_account_info::AccountInfo<'a>,
-        accounts: SwapCpiAccounts<'a, 'b>,
-        args: SwapInstructionArgs,
+        accounts: Swap2CpiAccounts<'a, 'b>,
+        args: Swap2InstructionArgs,
     ) -> Self {
         Self {
             __program: program,
@@ -540,7 +545,7 @@ impl<'a, 'b> SwapCpi<'a, 'b> {
             destination_user_ata: accounts.destination_user_ata,
             source_token_program: accounts.source_token_program,
             destination_token_program: accounts.destination_token_program,
-            instruction_sysvar: accounts.instruction_sysvar,
+            score_signer: accounts.score_signer,
             source_token_host_fees_account: accounts.source_token_host_fees_account,
             scope_price_feed: accounts.scope_price_feed,
             event_authority: accounts.event_authority,
@@ -622,8 +627,8 @@ impl<'a, 'b> SwapCpi<'a, 'b> {
             false,
         ));
         accounts.push(solana_instruction::AccountMeta::new_readonly(
-            *self.instruction_sysvar.key,
-            false,
+            *self.score_signer.key,
+            true,
         ));
         if let Some(source_token_host_fees_account) = self.source_token_host_fees_account {
             accounts.push(solana_instruction::AccountMeta::new(
@@ -662,7 +667,7 @@ impl<'a, 'b> SwapCpi<'a, 'b> {
                 is_writable: remaining_account.2,
             })
         });
-        let mut data = SwapInstructionData::new().try_to_vec().unwrap();
+        let mut data = Swap2InstructionData::new().try_to_vec().unwrap();
         let mut args = self.__args.try_to_vec().unwrap();
         data.append(&mut args);
 
@@ -686,7 +691,7 @@ impl<'a, 'b> SwapCpi<'a, 'b> {
         account_infos.push(self.destination_user_ata.clone());
         account_infos.push(self.source_token_program.clone());
         account_infos.push(self.destination_token_program.clone());
-        account_infos.push(self.instruction_sysvar.clone());
+        account_infos.push(self.score_signer.clone());
         if let Some(source_token_host_fees_account) = self.source_token_host_fees_account {
             account_infos.push(source_token_host_fees_account.clone());
         }
@@ -707,7 +712,7 @@ impl<'a, 'b> SwapCpi<'a, 'b> {
     }
 }
 
-/// Instruction builder for `Swap` via CPI.
+/// Instruction builder for `Swap2` via CPI.
 ///
 /// ### Accounts:
 ///
@@ -724,19 +729,19 @@ impl<'a, 'b> SwapCpi<'a, 'b> {
 ///   10. `[writable]` destination_user_ata
 ///   11. `[]` source_token_program
 ///   12. `[]` destination_token_program
-///   13. `[]` instruction_sysvar
+///   13. `[signer]` score_signer
 ///   14. `[writable, optional]` source_token_host_fees_account
 ///   15. `[optional]` scope_price_feed
 ///   16. `[]` event_authority
 ///   17. `[]` program
 #[derive(Clone, Debug)]
-pub struct SwapCpiBuilder<'a, 'b> {
-    instruction: Box<SwapCpiBuilderInstruction<'a, 'b>>,
+pub struct Swap2CpiBuilder<'a, 'b> {
+    instruction: Box<Swap2CpiBuilderInstruction<'a, 'b>>,
 }
 
-impl<'a, 'b> SwapCpiBuilder<'a, 'b> {
+impl<'a, 'b> Swap2CpiBuilder<'a, 'b> {
     pub fn new(program: &'b solana_account_info::AccountInfo<'a>) -> Self {
-        let instruction = Box::new(SwapCpiBuilderInstruction {
+        let instruction = Box::new(Swap2CpiBuilderInstruction {
             __program: program,
             signer: None,
             pool: None,
@@ -751,13 +756,14 @@ impl<'a, 'b> SwapCpiBuilder<'a, 'b> {
             destination_user_ata: None,
             source_token_program: None,
             destination_token_program: None,
-            instruction_sysvar: None,
+            score_signer: None,
             source_token_host_fees_account: None,
             scope_price_feed: None,
             event_authority: None,
             program: None,
             amount_in: None,
             minimum_amount_out: None,
+            score: None,
             __remaining_accounts: Vec::new(),
         });
         Self { instruction }
@@ -865,13 +871,13 @@ impl<'a, 'b> SwapCpiBuilder<'a, 'b> {
         self.instruction.destination_token_program = Some(destination_token_program);
         self
     }
-    /// Instructions sysvar
+    /// Score signer - validated in handler against allowed pubkeys
     #[inline(always)]
-    pub fn instruction_sysvar(
+    pub fn score_signer(
         &mut self,
-        instruction_sysvar: &'b solana_account_info::AccountInfo<'a>,
+        score_signer: &'b solana_account_info::AccountInfo<'a>,
     ) -> &mut Self {
-        self.instruction.instruction_sysvar = Some(instruction_sysvar);
+        self.instruction.score_signer = Some(score_signer);
         self
     }
     /// `[optional account]`
@@ -917,6 +923,11 @@ impl<'a, 'b> SwapCpiBuilder<'a, 'b> {
         self.instruction.minimum_amount_out = Some(minimum_amount_out);
         self
     }
+    #[inline(always)]
+    pub fn score(&mut self, score: u8) -> &mut Self {
+        self.instruction.score = Some(score);
+        self
+    }
     /// Add an additional account to the instruction.
     #[inline(always)]
     pub fn add_remaining_account(
@@ -951,7 +962,7 @@ impl<'a, 'b> SwapCpiBuilder<'a, 'b> {
     #[allow(clippy::clone_on_copy)]
     #[allow(clippy::vec_init_then_push)]
     pub fn invoke_signed(&self, signers_seeds: &[&[&[u8]]]) -> solana_program_error::ProgramResult {
-        let args = SwapInstructionArgs {
+        let args = Swap2InstructionArgs {
             amount_in: self
                 .instruction
                 .amount_in
@@ -962,8 +973,9 @@ impl<'a, 'b> SwapCpiBuilder<'a, 'b> {
                 .minimum_amount_out
                 .clone()
                 .expect("minimum_amount_out is not set"),
+            score: self.instruction.score.clone().expect("score is not set"),
         };
-        let instruction = SwapCpi {
+        let instruction = Swap2Cpi {
             __program: self.instruction.__program,
 
             signer: self.instruction.signer.expect("signer is not set"),
@@ -1022,10 +1034,10 @@ impl<'a, 'b> SwapCpiBuilder<'a, 'b> {
                 .destination_token_program
                 .expect("destination_token_program is not set"),
 
-            instruction_sysvar: self
+            score_signer: self
                 .instruction
-                .instruction_sysvar
-                .expect("instruction_sysvar is not set"),
+                .score_signer
+                .expect("score_signer is not set"),
 
             source_token_host_fees_account: self.instruction.source_token_host_fees_account,
 
@@ -1047,7 +1059,7 @@ impl<'a, 'b> SwapCpiBuilder<'a, 'b> {
 }
 
 #[derive(Clone, Debug)]
-struct SwapCpiBuilderInstruction<'a, 'b> {
+struct Swap2CpiBuilderInstruction<'a, 'b> {
     __program: &'b solana_account_info::AccountInfo<'a>,
     signer: Option<&'b solana_account_info::AccountInfo<'a>>,
     pool: Option<&'b solana_account_info::AccountInfo<'a>>,
@@ -1062,13 +1074,14 @@ struct SwapCpiBuilderInstruction<'a, 'b> {
     destination_user_ata: Option<&'b solana_account_info::AccountInfo<'a>>,
     source_token_program: Option<&'b solana_account_info::AccountInfo<'a>>,
     destination_token_program: Option<&'b solana_account_info::AccountInfo<'a>>,
-    instruction_sysvar: Option<&'b solana_account_info::AccountInfo<'a>>,
+    score_signer: Option<&'b solana_account_info::AccountInfo<'a>>,
     source_token_host_fees_account: Option<&'b solana_account_info::AccountInfo<'a>>,
     scope_price_feed: Option<&'b solana_account_info::AccountInfo<'a>>,
     event_authority: Option<&'b solana_account_info::AccountInfo<'a>>,
     program: Option<&'b solana_account_info::AccountInfo<'a>>,
     amount_in: Option<u64>,
     minimum_amount_out: Option<u64>,
+    score: Option<u8>,
     /// Additional instruction accounts `(AccountInfo, is_writable, is_signer)`.
     __remaining_accounts: Vec<(&'b solana_account_info::AccountInfo<'a>, bool, bool)>,
 }

@@ -14,7 +14,6 @@ use super::BPS_DENOMINATOR;
 
 /// Compute 10^exp as U256, supporting exponents up to 77
 #[inline]
-#[allow(clippy::arithmetic_side_effects)] // Safe: subtractions are guarded by if conditions
 fn pow10_u256(exp: u64) -> U256 {
     // Max exp that fits in u128 is 38
     if exp <= 38 {
@@ -22,13 +21,13 @@ fn pow10_u256(exp: u64) -> U256 {
     } else {
         // For larger exponents, compute in steps
         let base = U256::from(10u128.pow(38));
-        let remaining = exp - 38;
+        let remaining = exp.saturating_sub(38);
         if remaining <= 38 {
             base.saturating_mul(U256::from(10u128.pow(remaining as u32)))
         } else {
             // exp > 76, very unlikely but handle it
             let mid = U256::from(10u128.pow(38));
-            let remaining2 = remaining - 38;
+            let remaining2 = remaining.saturating_sub(38);
             base.saturating_mul(mid)
                 .saturating_mul(U256::from(10u128.pow(remaining2.min(38) as u32)))
         }

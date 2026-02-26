@@ -15,4 +15,5 @@ pub enum UpdatePoolConfigValue {
     PriceChainArray([u16; 4]),
     MaxAgeSecs([u16; 4]),
     PriceOffsetBps(i64),
+    ScoreFactorBps(u64),
 }

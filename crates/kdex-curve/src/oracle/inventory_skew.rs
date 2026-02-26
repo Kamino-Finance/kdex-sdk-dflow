@@ -16,7 +16,7 @@ use crate::{
     CurveError, Result, SwapResult, TradeDirection,
 };
 
-use super::BPS_DENOMINATOR;
+use super::{PRECISION_SCALE, SPREAD_PRECISION};
 
 /// Multiply then divide using U256 to avoid overflow
 /// Computes (a * b) / c
@@ -95,8 +95,8 @@ fn mul_div_scale(a: u128, b: u128, exp: u64) -> Result<u128> {
 /// e.g., alpha = 2.0 is stored as 20000
 const ALPHA_SCALE: u128 = 10_000;
 
-/// Maximum spread (just under 100%)
-const MAX_SPREAD_BPS: u64 = 9999;
+/// Maximum spread in milli-bps (9999 bps * 1000)
+const MAX_SPREAD_MILLIBPS: u128 = 9_999_000;
 
 /// Parameters for inventory skew pricing
 #[derive(Clone, Copy, Debug)]
@@ -271,22 +271,25 @@ fn power_integer(base: u128, exp: u32) -> Result<u128> {
 /// - extra_bid_bps = skew_bps * max(0, y)
 /// - extra_ask_bps = skew_bps * max(0, -y)
 ///
-/// Returns (bid_spread_bps, ask_spread_bps)
+/// Returns (bid_spread_millibps, ask_spread_millibps) in milli-basis-points
+/// (1000 milli-bps = 1 bps) for sub-bps precision and smooth curves.
 fn calculate_dynamic_spreads(
     base_spread_bps: u64,
     size_spread_bps: u64,
     skew_bps: u64,
     y: i128, // Inventory ratio scaled by 10000
     f: u128, // Size impact factor scaled by 10000
-) -> Result<(u64, u64)> {
-    // Base half-spread
-    let base_half = base_spread_bps / 2; // Safe: division by constant
+) -> Result<(u128, u128)> {
+    // Scale inputs from bps to milli-bps for sub-bps precision
+    let base_spread = checked_mul(base_spread_bps as u128, PRECISION_SCALE)?;
+    let size_spread = checked_mul(size_spread_bps as u128, PRECISION_SCALE)?;
+    let skew = checked_mul(skew_bps as u128, PRECISION_SCALE)?;
 
-    // Size component: size_spread_bps * f / 2 (f is scaled by 10000)
-    let size_component = checked_div(
-        checked_div(checked_mul(size_spread_bps as u128, f)?, 10000)?,
-        2,
-    )? as u64;
+    // Base half-spread (no truncation loss for odd bps values)
+    let base_half = checked_div(base_spread, 2)?;
+
+    // Size component: size_spread * f / 10000 / 2 (f is scaled by 10000)
+    let size_component = checked_div(checked_div(checked_mul(size_spread, f)?, 10000)?, 2)?;
 
     let base_half_spread = base_half.saturating_add(size_component);
 
@@ -294,40 +297,38 @@ fn calculate_dynamic_spreads(
     // Token B (quote currency) perspective: bid/ask refer to the base asset (token A)
     // When y > 0 (excess token A), widen bid to discourage users selling more A (AtoB)
     // When y < 0 (deficit token A), widen ask to discourage users buying more A (BtoA)
-    let extra_bid_bps = if y > 0 {
-        let skew = skew_bps as i128;
-        // Safe: skew and y are bounded, result fits in u64
-        skew.saturating_mul(y)
+    let extra_bid = if y > 0 {
+        let skew_i = skew as i128;
+        skew_i
+            .saturating_mul(y)
             .checked_div(10000)
             .unwrap_or(0)
-            .try_into()
-            .unwrap_or(0)
+            .max(0) as u128
     } else {
         0
     };
 
-    let extra_ask_bps = if y < 0 {
-        let skew = skew_bps as i128;
+    let extra_ask = if y < 0 {
+        let skew_i = skew as i128;
         let neg_y = y.saturating_neg();
-        // Safe: skew and neg_y are bounded, result fits in u64
-        skew.saturating_mul(neg_y)
+        skew_i
+            .saturating_mul(neg_y)
             .checked_div(10000)
             .unwrap_or(0)
-            .try_into()
-            .unwrap_or(0)
+            .max(0) as u128
     } else {
         0
     };
 
-    // Final spreads, capped at MAX_SPREAD_BPS
-    let bid_spread_bps = base_half_spread
-        .saturating_add(extra_bid_bps)
-        .min(MAX_SPREAD_BPS);
-    let ask_spread_bps = base_half_spread
-        .saturating_add(extra_ask_bps)
-        .min(MAX_SPREAD_BPS);
+    // Final spreads, capped at MAX_SPREAD_MILLIBPS
+    let bid_spread = base_half_spread
+        .saturating_add(extra_bid)
+        .min(MAX_SPREAD_MILLIBPS);
+    let ask_spread = base_half_spread
+        .saturating_add(extra_ask)
+        .min(MAX_SPREAD_MILLIBPS);
 
-    Ok((bid_spread_bps, ask_spread_bps))
+    Ok((bid_spread, ask_spread))
 }
 
 /// Calculate inventory and swap size ratios for inventory skew pricing
@@ -452,8 +453,8 @@ pub fn swap(
     // Calculate size impact factor
     let f = calculate_size_impact_factor(swap_size_ratio, params.q_ref, params.alpha)?;
 
-    // Calculate dynamic spreads
-    let (bid_spread_bps, ask_spread_bps) = calculate_dynamic_spreads(
+    // Calculate dynamic spreads (returns milli-bps for sub-bps precision)
+    let (bid_spread, ask_spread) = calculate_dynamic_spreads(
         params.base_spread_bps,
         params.size_spread_bps,
         params.skew_bps,
@@ -469,8 +470,8 @@ pub fn swap(
             // Bid: lower effective price → user receives less B per A
             let effective_price = mul_div(
                 price_value,
-                checked_sub(BPS_DENOMINATOR, bid_spread_bps as u128)?,
-                BPS_DENOMINATOR,
+                checked_sub(SPREAD_PRECISION, bid_spread)?,
+                SPREAD_PRECISION,
             )?;
 
             // destination = source_amount * effective_price / scale
@@ -484,8 +485,8 @@ pub fn swap(
             // Ask: higher effective price → user receives less A per B
             let effective_price = mul_div(
                 price_value,
-                checked_add(BPS_DENOMINATOR, ask_spread_bps as u128)?,
-                BPS_DENOMINATOR,
+                checked_add(SPREAD_PRECISION, ask_spread)?,
+                SPREAD_PRECISION,
             )?;
 
             // destination = source_amount * scale / effective_price
@@ -560,28 +561,43 @@ mod tests {
     fn test_dynamic_spreads_balanced() {
         // Balanced inventory, reference size
         let (bid, ask) = calculate_dynamic_spreads(10, 40, 100, 0, 10000).unwrap();
-        // base_half = 5, size_component = 40 * 1.0 / 2 = 20
-        // base_half_spread = 25
-        assert_eq!(bid, 25);
-        assert_eq!(ask, 25);
+        // base_half = 5000 milli-bps, size_component = 40000 * 1.0 / 2 = 20000
+        // base_half_spread = 25000 milli-bps = 25 bps
+        assert_eq!(bid, 25000);
+        assert_eq!(ask, 25000);
     }
 
     #[test]
     fn test_dynamic_spreads_excess_inventory() {
         // y = 0.5 (excess inventory) → widen bid
         let (bid, ask) = calculate_dynamic_spreads(10, 40, 100, 5000, 10000).unwrap();
-        // extra_bid = 100 * 0.5 = 50
-        assert_eq!(bid, 75);
-        assert_eq!(ask, 25);
+        // extra_bid = 100000 * 0.5 = 50000 milli-bps
+        assert_eq!(bid, 75000);
+        assert_eq!(ask, 25000);
     }
 
     #[test]
     fn test_dynamic_spreads_deficit_inventory() {
         // y = -0.5 (deficit inventory) → widen ask
         let (bid, ask) = calculate_dynamic_spreads(10, 40, 100, -5000, 10000).unwrap();
-        // extra_ask = 100 * 0.5 = 50
-        assert_eq!(bid, 25);
-        assert_eq!(ask, 75);
+        // extra_ask = 100000 * 0.5 = 50000 milli-bps
+        assert_eq!(bid, 25000);
+        assert_eq!(ask, 75000);
+    }
+
+    #[test]
+    fn test_dynamic_spreads_sub_bps_precision() {
+        // Odd base_spread_bps: old code truncated 11/2=5 bps, now 11000/2=5500 milli-bps
+        let (bid, ask) = calculate_dynamic_spreads(11, 0, 0, 0, 0).unwrap();
+        assert_eq!(bid, 5500); // 5.5 bps preserved
+        assert_eq!(ask, 5500);
+
+        // Small inventory deviation produces sub-bps skew adjustment
+        // y = 1 (out of 10000 scale = 0.01%), skew_bps = 100
+        // extra = 100*1000*1/10000 = 10 milli-bps = 0.01 bps
+        let (bid, ask) = calculate_dynamic_spreads(10, 0, 100, 1, 0).unwrap();
+        assert_eq!(bid, 5000 + 10); // 5.01 bps
+        assert_eq!(ask, 5000);
     }
 
     #[test]

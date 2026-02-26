@@ -5,7 +5,11 @@
 
 use anchor_lang::AccountDeserialize;
 use anyhow::Result;
+use kdex_client::curves::{ConstantSpreadOracleCurve, InventorySkewOracleCurve};
 use kdex_client::generated::accounts::SwapPool;
+use kdex_client::liquidity::{
+    cap_input_proportional, estimate_max_input_for_vault, search_max_input, SwapFit,
+};
 use kdex_client::state::SwapState;
 use kdex_client::{CurveType, TradeDirection, KDEX_ID};
 use solana_sdk::pubkey::Pubkey;
@@ -14,6 +18,9 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
 use crate::oracle;
+
+/// Maximum allowed score value for spread widening
+const MAX_SCORE: u8 = 4;
 
 // Re-export dflow-amm-interface types for convenience
 pub use anchor_spl::token::TokenAccount;
@@ -89,6 +96,12 @@ pub struct KDEXAmm {
     /// - `0`: No preemptive cap; quote the full amount and binary search on overflow.
     /// - `9000-9999`: Preemptively estimate max input targeting this % of vault (default 9800 = 98%).
     vault_capacity_target_bps: u16,
+    /// Extra seconds added to the curve's `max_age_secs` when checking oracle staleness
+    /// off-chain. `None` = auto: use `min(max_age_secs)` across the active price chain.
+    /// `Some(x)` = fixed override (can be negative to tighten, useful for testing).
+    oracle_staleness_offset_secs: Option<i64>,
+    /// Whether to check oracle staleness in `is_active()`. Default: true.
+    oracle_staleness_check: bool,
 }
 
 impl KDEXAmm {
@@ -112,6 +125,8 @@ impl KDEXAmm {
             token_a_decimals: 0,
             token_b_decimals: 0,
             vault_capacity_target_bps: 9800, // Default: 98%
+            oracle_staleness_offset_secs: None,
+            oracle_staleness_check: true,
         })
     }
 
@@ -147,6 +162,8 @@ impl KDEXAmm {
             token_a_decimals: 0,
             token_b_decimals: 0,
             vault_capacity_target_bps: 9800, // Default: 98%
+            oracle_staleness_offset_secs: None,
+            oracle_staleness_check: true,
         })
     }
 
@@ -192,6 +209,57 @@ impl KDEXAmm {
         Ok(self)
     }
 
+    /// Sets the oracle staleness offset in seconds (default: 60).
+    ///
+    /// This is added to the curve's `max_age_secs` when checking oracle staleness
+    /// off-chain, providing a buffer for cache lag and clock drift before marking
+    /// the pool inactive.
+    pub fn with_oracle_staleness_offset(mut self, offset_secs: i64) -> Self {
+        self.oracle_staleness_offset_secs = Some(offset_secs);
+        self
+    }
+
+    /// Enables or disables the oracle staleness check in `is_active()` (default: enabled).
+    pub fn with_oracle_staleness_check(mut self, enabled: bool) -> Self {
+        self.oracle_staleness_check = enabled;
+        self
+    }
+
+    /// Returns the pool's `score_factor_bps` from cached curve data.
+    ///
+    /// Returns 0 for non-oracle curves or if curve data hasn't been cached yet.
+    pub fn score_factor_bps(&self) -> u64 {
+        self.read_score_factor_from_curve_data().unwrap_or(0)
+    }
+
+    /// Computes `score * score_factor_bps` from the cached curve data.
+    ///
+    /// Returns 0 when score is 0 or when curve data is unavailable/too short.
+    fn score_multiplier_bps(&self, score: u8) -> u64 {
+        if score == 0 {
+            return 0;
+        }
+        let score_factor_bps = self.read_score_factor_from_curve_data().unwrap_or(0);
+        (score as u64).saturating_mul(score_factor_bps)
+    }
+
+    /// Reads `score_factor_bps` from raw byte offsets in the cached curve account data.
+    ///
+    /// ConstantSpreadOracle: bytes 72..80 (after disc+pubkey+chain+max_age+bps+offset)
+    /// InventorySkewOracle: bytes 120..128 (after disc+pubkey+chain+max_age+7*8+offset)
+    fn read_score_factor_from_curve_data(&self) -> Option<u64> {
+        let data = self.curve_account_data.as_ref()?;
+        let range = match self.pool.curve_type() {
+            CurveType::ConstantSpreadOracle => 72..80,
+            CurveType::InventorySkewOracle => 120..128,
+            _ => return Some(0),
+        };
+        if data.len() < range.end {
+            return None;
+        }
+        Some(u64::from_le_bytes(data[range].try_into().ok()?))
+    }
+
     /// Gets the token program for a given mint by checking which vault it corresponds to
     ///
     /// Returns the detected token program (SPL Token or Token-2022) for the vault.
@@ -216,23 +284,105 @@ impl KDEXAmm {
         self.pool.withdrawals_only != 0
     }
 
+    /// Returns true if the cached oracle price is too stale to quote on.
+    ///
+    /// Checks each price index in the curve's price chain against
+    /// `max_age_secs + ORACLE_STALENESS_OFFSET_SECS`. The offset absorbs cache
+    /// lag and clock drift so we don't produce false negatives.
+    ///
+    /// Returns false (not stale) if no curve/oracle data is cached yet, or for
+    /// any index where the timestamp can't be read.
+    fn is_oracle_stale(&self) -> bool {
+        if !self.oracle_staleness_check {
+            return false;
+        }
+        let curve_data = match &self.curve_account_data {
+            Some(d) => d,
+            None => return false,
+        };
+
+        let (scope_pubkey, price_chain, max_age_secs) = match self.pool.curve_type() {
+            CurveType::ConstantSpreadOracle => {
+                let curve =
+                    match ConstantSpreadOracleCurve::try_deserialize(&mut curve_data.as_slice()) {
+                        Ok(c) => c,
+                        Err(_) => return false,
+                    };
+                (
+                    curve.scope_price_feed,
+                    curve.price_chain,
+                    curve.max_age_secs,
+                )
+            }
+            CurveType::InventorySkewOracle => {
+                let curve =
+                    match InventorySkewOracleCurve::try_deserialize(&mut curve_data.as_slice()) {
+                        Ok(c) => c,
+                        Err(_) => return false,
+                    };
+                (
+                    curve.scope_price_feed,
+                    curve.price_chain,
+                    curve.max_age_secs,
+                )
+            }
+            _ => return false,
+        };
+
+        let scope_account = match self.scope_price_feeds.get(&scope_pubkey) {
+            Some(a) => a,
+            None => return false,
+        };
+
+        // Resolve the staleness offset: explicit override, or auto = min(max_age_secs)
+        // across the active (non-sentinel) price chain entries.
+        let offset: i64 = self.oracle_staleness_offset_secs.unwrap_or_else(|| {
+            price_chain
+                .iter()
+                .zip(max_age_secs.iter())
+                .take_while(|(&idx, _)| idx != u16::MAX)
+                .map(|(_, &age)| age as i64)
+                .min()
+                .unwrap_or(0)
+        });
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        for i in 0..4 {
+            let idx = price_chain[i];
+            if idx == u16::MAX {
+                break;
+            }
+            let threshold = (max_age_secs[i] as i64).saturating_add(offset).max(0) as u64;
+            if let Some(ts) = oracle::fetch_scope_price_timestamp(scope_account, idx) {
+                if now.saturating_sub(ts) > threshold {
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
+
     /// Gets the Scope price feed pubkey for oracle-based curves
     ///
     /// For ConstantSpreadOracle and InventorySkewOracle curves, this returns the
     /// Scope price feed account pubkey stored in the curve configuration.
     /// For other curve types, returns None.
     pub fn get_scope_price_feed(&self, accounts_map: &AccountMap) -> Option<Pubkey> {
+        let curve_account = accounts_map.get(&self.pool.swap_curve)?;
+        let data = curve_account.data.as_slice();
         match self.pool.curve_type() {
-            CurveType::ConstantSpreadOracle | CurveType::InventorySkewOracle => {
-                let curve_account = accounts_map.get(&self.pool.swap_curve)?;
-
-                // Extract scope_price_feed from curve data
-                // Layout: discriminator(8) + scope_price_feed(32) + ...
-                if curve_account.data.len() >= 40 {
-                    Pubkey::try_from(&curve_account.data[8..40]).ok()
-                } else {
-                    None
-                }
+            CurveType::ConstantSpreadOracle => {
+                let curve = ConstantSpreadOracleCurve::try_deserialize(&mut &*data).ok()?;
+                Some(curve.scope_price_feed)
+            }
+            CurveType::InventorySkewOracle => {
+                let curve = InventorySkewOracleCurve::try_deserialize(&mut &*data).ok()?;
+                Some(curve.scope_price_feed)
             }
             _ => None,
         }
@@ -242,11 +392,19 @@ impl KDEXAmm {
     ///
     /// Alternative to `quote()` that allows passing Scope account directly in accounts_map
     /// instead of requiring it to be cached via `update()`.
+    ///
+    /// `score` is the DFlow flow score (0-4) for spread widening.
+    /// Higher scores indicate more toxic flow and result in wider spreads.
     pub fn quote_oracle(
         &self,
         quote_params: &QuoteParams,
         accounts_map: &AccountMap,
+        score: u8,
     ) -> Result<Quote> {
+        if score > MAX_SCORE {
+            anyhow::bail!("Invalid score: {} (max: {})", score, MAX_SCORE);
+        }
+
         // Validate vaults are updated
         let (token_a_amount, token_b_amount) = match (&self.token_a_vault, &self.token_b_vault) {
             (Some(token_a_vault), Some(token_b_vault)) => {
@@ -298,7 +456,7 @@ impl KDEXAmm {
 
                 if self.vault_capacity_target_bps == 0 {
                     // No cap: quote directly, binary search on overflow
-                    match oracle::calculate_constant_spread_quote(
+                    match oracle::calculate_constant_spread_quote_with_score(
                         &self.pool.fees,
                         quote_params.amount,
                         destination_vault_amount,
@@ -307,13 +465,14 @@ impl KDEXAmm {
                         scope_account,
                         self.token_a_decimals,
                         self.token_b_decimals,
+                        self.score_multiplier_bps(score),
                     ) {
                         Ok((_src, dest, _fees)) => (quote_params.amount, dest),
                         Err(crate::error::SdkError::InsufficientLiquidity {
                             required,
                             available,
                         }) => search_max_input(quote_params.amount, required, available, |amt| {
-                            match oracle::calculate_constant_spread_quote(
+                            match oracle::calculate_constant_spread_quote_with_score(
                                 &self.pool.fees,
                                 amt,
                                 destination_vault_amount,
@@ -322,6 +481,7 @@ impl KDEXAmm {
                                 scope_account,
                                 self.token_a_decimals,
                                 self.token_b_decimals,
+                                self.score_multiplier_bps(score),
                             ) {
                                 Ok((_src, dest, _fees)) => SwapFit::Fits(dest),
                                 Err(crate::error::SdkError::InsufficientLiquidity { .. }) => {
@@ -392,7 +552,7 @@ impl KDEXAmm {
                         self.vault_capacity_target_bps,
                     );
 
-                    match oracle::calculate_constant_spread_quote(
+                    match oracle::calculate_constant_spread_quote_with_score(
                         &self.pool.fees,
                         estimated_input,
                         destination_vault_amount,
@@ -401,6 +561,7 @@ impl KDEXAmm {
                         scope_account,
                         self.token_a_decimals,
                         self.token_b_decimals,
+                        self.score_multiplier_bps(score),
                     ) {
                         Ok((_src, dest, _fees)) => (estimated_input, dest),
                         Err(crate::error::SdkError::InsufficientLiquidity {
@@ -413,7 +574,7 @@ impl KDEXAmm {
                                 available,
                                 self.vault_capacity_target_bps,
                             );
-                            match oracle::calculate_constant_spread_quote(
+                            match oracle::calculate_constant_spread_quote_with_score(
                                 &self.pool.fees,
                                 capped_input,
                                 destination_vault_amount,
@@ -422,6 +583,7 @@ impl KDEXAmm {
                                 scope_account,
                                 self.token_a_decimals,
                                 self.token_b_decimals,
+                                self.score_multiplier_bps(score),
                             ) {
                                 Ok((_src, dest, _fees)) => (capped_input, dest),
                                 Err(e) => return Err(e.into()),
@@ -445,7 +607,7 @@ impl KDEXAmm {
 
                 if self.vault_capacity_target_bps == 0 {
                     // No cap: quote directly, binary search on overflow
-                    match oracle::calculate_inventory_skew_quote(
+                    match oracle::calculate_inventory_skew_quote_with_score(
                         &self.pool.fees,
                         quote_params.amount,
                         source_vault_amount,
@@ -455,13 +617,14 @@ impl KDEXAmm {
                         scope_account,
                         self.token_a_decimals,
                         self.token_b_decimals,
+                        self.score_multiplier_bps(score),
                     ) {
                         Ok((_src, dest, _fees)) => (quote_params.amount, dest),
                         Err(crate::error::SdkError::InsufficientLiquidity {
                             required,
                             available,
                         }) => search_max_input(quote_params.amount, required, available, |amt| {
-                            match oracle::calculate_inventory_skew_quote(
+                            match oracle::calculate_inventory_skew_quote_with_score(
                                 &self.pool.fees,
                                 amt,
                                 source_vault_amount,
@@ -471,6 +634,7 @@ impl KDEXAmm {
                                 scope_account,
                                 self.token_a_decimals,
                                 self.token_b_decimals,
+                                self.score_multiplier_bps(score),
                             ) {
                                 Ok((_src, dest, _fees)) => SwapFit::Fits(dest),
                                 Err(crate::error::SdkError::InsufficientLiquidity { .. }) => {
@@ -539,7 +703,7 @@ impl KDEXAmm {
                         self.vault_capacity_target_bps,
                     );
 
-                    match oracle::calculate_inventory_skew_quote(
+                    match oracle::calculate_inventory_skew_quote_with_score(
                         &self.pool.fees,
                         estimated_input,
                         source_vault_amount,
@@ -549,6 +713,7 @@ impl KDEXAmm {
                         scope_account,
                         self.token_a_decimals,
                         self.token_b_decimals,
+                        self.score_multiplier_bps(score),
                     ) {
                         Ok((_src, dest, _fees)) => (estimated_input, dest),
                         Err(crate::error::SdkError::InsufficientLiquidity {
@@ -561,7 +726,7 @@ impl KDEXAmm {
                                 available,
                                 self.vault_capacity_target_bps,
                             );
-                            match oracle::calculate_inventory_skew_quote(
+                            match oracle::calculate_inventory_skew_quote_with_score(
                                 &self.pool.fees,
                                 capped_input,
                                 source_vault_amount,
@@ -571,6 +736,7 @@ impl KDEXAmm {
                                 scope_account,
                                 self.token_a_decimals,
                                 self.token_b_decimals,
+                                self.score_multiplier_bps(score),
                             ) {
                                 Ok((_src, dest, _fees)) => (capped_input, dest),
                                 Err(e) => return Err(e.into()),
@@ -665,282 +831,16 @@ impl KDEXAmm {
 
         Ok(has_changes)
     }
-}
 
-/// Estimate maximum input to target specified % of vault capacity based on oracle price.
-///
-/// Rough approximation using oracle price and fees. For non-linear curves (InventorySkewOracle),
-/// this may be conservative, but prevents hitting vault limits.
-///
-/// # Arguments
-/// * `target_bps` - Target vault utilization in basis points (e.g., 9800 = 98%)
-///
-/// Returns estimated max input, or amount_in if no cap needed.
-#[allow(clippy::too_many_arguments)]
-fn estimate_max_input_for_vault(
-    amount_in: u64,
-    vault_capacity: u64,
-    oracle_price_value: u128,
-    oracle_price_exp: u64,
-    price_offset_bps: i64,
-    trade_direction: TradeDirection,
-    fee_bps: u64,
-    target_bps: u16,
-) -> u64 {
-    // Target specified % of vault capacity
-    let target_output = (vault_capacity as u128)
-        .saturating_mul(target_bps as u128)
-        .checked_div(10000)
-        .expect("Division by 10000 should never fail");
-
-    // Adjust oracle price for price_offset_bps (negated as per SDK convention)
-    let adjusted_price = {
-        let negated_offset = (price_offset_bps as i128)
-            .checked_neg()
-            .expect("Price offset negation should not overflow");
-        let offset_factor = 10000i128
-            .checked_add(negated_offset)
-            .expect("Price offset addition should not overflow");
-
-        // Ensure multiplier is positive
-        if offset_factor <= 0 {
-            panic!(
-                "Price offset resulted in non-positive multiplier: {}",
-                offset_factor
-            );
+    /// Quote with a DFlow flow score for spread widening.
+    ///
+    /// `score` is 0-4 where higher scores indicate more toxic flow and result in wider spreads.
+    /// This is the primary method DFlow calls. The trait `quote()` delegates here with score=0.
+    pub fn quote_with_score(&self, quote_params: &QuoteParams, score: u8) -> Result<Quote> {
+        if score > MAX_SCORE {
+            anyhow::bail!("Invalid score: {} (max: {})", score, MAX_SCORE);
         }
 
-        oracle_price_value
-            .checked_mul(offset_factor as u128)
-            .expect("Price multiplication should not overflow")
-            .checked_div(10000)
-            .expect("Division by 10000 should never fail")
-    };
-
-    // Rough estimate considering fees (worst case: all fees)
-    let fee_factor = (10000u128).saturating_sub(fee_bps as u128);
-
-    let estimated_max = match trade_direction {
-        TradeDirection::AtoB => {
-            // output = input * price / 10^exp * (1 - fees)
-            // input_max = output * 10^exp / price / (1 - fees)
-            let scale = 10u128.saturating_pow(oracle_price_exp as u32);
-            target_output
-                .saturating_mul(scale)
-                .saturating_mul(10000)
-                .checked_div(adjusted_price)
-                .expect("Price division should not fail with positive adjusted price")
-                .checked_div(fee_factor)
-                .expect("Fee factor division should not fail")
-        }
-        TradeDirection::BtoA => {
-            // output = input * 10^exp / price * (1 - fees)
-            // input_max = output * price / 10^exp / (1 - fees)
-            let scale = 10u128.saturating_pow(oracle_price_exp as u32);
-            target_output
-                .saturating_mul(adjusted_price)
-                .saturating_mul(10000)
-                .checked_div(scale)
-                .expect("Scale division should not fail with valid exponent")
-                .checked_div(fee_factor)
-                .expect("Fee factor division should not fail")
-        }
-    } as u64;
-
-    amount_in.min(estimated_max)
-}
-
-/// Cap input amount proportionally when output exceeds vault capacity (fallback).
-///
-/// Used only when estimate was insufficient and InsufficientLiquidity error occurs.
-///
-/// # Arguments
-/// * `target_bps` - Target vault utilization in basis points (e.g., 9800 = 98%)
-fn cap_input_proportional(
-    amount_in: u64,
-    output_amount: u64,
-    vault_capacity: u64,
-    target_bps: u16,
-) -> u64 {
-    // Scale down input proportionally: amount_in * (vault_capacity / output_amount) * target_bps
-    (amount_in as u128)
-        .saturating_mul(vault_capacity as u128)
-        .saturating_mul(target_bps as u128)
-        .checked_div(output_amount as u128)
-        .unwrap_or(0)
-        .checked_div(10000)
-        .unwrap_or(0) as u64
-}
-
-/// Result of attempting a swap quote at a given input amount.
-enum SwapFit {
-    /// Output fits within the destination vault.
-    Fits(u64),
-    /// Output exceeds destination vault liquidity.
-    ExceedsVault,
-    /// Other error (e.g., input too small to cover fees).
-    OtherError,
-}
-
-/// Binary search for the maximum input amount whose swap output fits within
-/// the destination vault. Uses a proportional estimate to seed the search,
-/// keeping iterations to ~2-5 in practice instead of 64.
-/// Returns (consumed_input, output_amount).
-fn search_max_input(
-    amount_in: u64,
-    required: u64,
-    available: u64,
-    try_swap: impl Fn(u64) -> SwapFit,
-) -> (u64, u64) {
-    // Proportional estimate: the exact answer for linear curves, close for non-linear
-    let estimate = (amount_in as u128)
-        .saturating_mul(available as u128)
-        .checked_div(required as u128)
-        .unwrap_or(0) as u64;
-
-    // Seed the search around the estimate with a small margin
-    let margin = estimate / 100; // 1% margin
-    let mut lo: u64 = estimate.saturating_sub(margin);
-    let mut hi: u64 = estimate
-        .saturating_add(margin)
-        .min(amount_in.saturating_sub(1));
-    let mut best = (0u64, 0u64);
-
-    while lo <= hi {
-        let mid = lo.saturating_add(hi.saturating_sub(lo) / 2);
-        match try_swap(mid) {
-            SwapFit::Fits(out) => {
-                best = (mid, out);
-                if mid == u64::MAX {
-                    break;
-                }
-                lo = mid.saturating_add(1);
-            }
-            SwapFit::ExceedsVault => {
-                if mid == 0 {
-                    break;
-                }
-                hi = mid.saturating_sub(1);
-            }
-            SwapFit::OtherError => {
-                if mid == u64::MAX {
-                    break;
-                }
-                lo = mid.saturating_add(1);
-            }
-        }
-    }
-
-    best
-}
-
-impl Amm for KDEXAmm {
-    fn label(&self) -> String {
-        self.label.clone()
-    }
-
-    fn program_id(&self) -> Pubkey {
-        self.program_id
-    }
-
-    fn key(&self) -> Pubkey {
-        self.pool_key
-    }
-
-    fn get_reserve_mints(&self) -> Vec<Pubkey> {
-        vec![self.pool.token_a_mint, self.pool.token_b_mint]
-    }
-
-    fn get_accounts_to_update(&self) -> Vec<Pubkey> {
-        let mut accounts = vec![
-            self.pool.token_a_vault,
-            self.pool.token_b_vault,
-            self.pool.swap_curve,
-            self.pool.token_a_mint,
-            self.pool.token_b_mint,
-        ];
-
-        // For oracle curves, include Scope price feed if we can extract it
-        match self.pool.curve_type() {
-            CurveType::ConstantSpreadOracle | CurveType::InventorySkewOracle => {
-                // If we have curve data cached, we can extract the Scope address
-                if let Some(curve_data) = &self.curve_account_data {
-                    if curve_data.len() >= 40 {
-                        if let Ok(scope_feed) = Pubkey::try_from(&curve_data[8..40]) {
-                            accounts.push(scope_feed);
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-
-        accounts
-    }
-
-    fn from_keyed_account(keyed_account: &KeyedAccount, _amm_context: &AmmContext) -> Result<Self> {
-        KDEXAmm::new_from_keyed_account(keyed_account)
-    }
-
-    fn update(&mut self, accounts_map: &AccountMap) -> Result<()> {
-        // Update token vaults and detect token programs
-        self.token_a_vault = if let Some(account) = accounts_map.get(&self.pool.token_a_vault) {
-            // Detect token program from account owner
-            self.token_a_program = Some(account.owner);
-
-            let mut data = &account.data[..];
-            Some(TokenAccount::try_deserialize(&mut data)?)
-        } else {
-            None
-        };
-
-        self.token_b_vault = if let Some(account) = accounts_map.get(&self.pool.token_b_vault) {
-            // Detect token program from account owner
-            self.token_b_program = Some(account.owner);
-
-            let mut data = &account.data[..];
-            Some(TokenAccount::try_deserialize(&mut data)?)
-        } else {
-            None
-        };
-
-        // Update token decimals from mint accounts
-        // SPL Token Mint layout: mint_authority(36) + supply(8) + decimals(1)
-        // Decimals byte is at offset 44 for both SPL Token and Token-2022
-        if let Some(mint_account) = accounts_map.get(&self.pool.token_a_mint) {
-            if mint_account.data.len() > 44 {
-                self.token_a_decimals = mint_account.data[44];
-            }
-        }
-        if let Some(mint_account) = accounts_map.get(&self.pool.token_b_mint) {
-            if mint_account.data.len() > 44 {
-                self.token_b_decimals = mint_account.data[44];
-            }
-        }
-
-        // Update curve data
-        if let Some(curve_account) = accounts_map.get(&self.pool.swap_curve) {
-            // Cache curve account data for quotes
-            self.curve_account_data = Some(curve_account.data.clone());
-
-            // For oracle curves, cache the Scope price feed account if available
-            match self.pool.curve_type() {
-                CurveType::ConstantSpreadOracle | CurveType::InventorySkewOracle => {
-                    if let Some(scope_pubkey) = self.get_scope_price_feed(accounts_map) {
-                        if let Some(scope_account) = accounts_map.get(&scope_pubkey) {
-                            self.scope_price_feeds
-                                .insert(scope_pubkey, scope_account.clone());
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        Ok(())
-    }
-
-    fn quote(&self, quote_params: &QuoteParams) -> Result<Quote> {
         // For oracle curves, use cached Scope account from update()
         match self.pool.curve_type() {
             CurveType::ConstantSpreadOracle | CurveType::InventorySkewOracle => {
@@ -985,7 +885,7 @@ impl Amm for KDEXAmm {
                         CurveType::ConstantSpreadOracle => {
                             if self.vault_capacity_target_bps == 0 {
                                 // No cap: quote directly, binary search on overflow
-                                match oracle::calculate_constant_spread_quote(
+                                match oracle::calculate_constant_spread_quote_with_score(
                                     &self.pool.fees,
                                     quote_params.amount,
                                     destination_vault_amount,
@@ -994,6 +894,7 @@ impl Amm for KDEXAmm {
                                     scope_account,
                                     self.token_a_decimals,
                                     self.token_b_decimals,
+                                    self.score_multiplier_bps(score),
                                 ) {
                                     Ok((_src, dest, _fees)) => (quote_params.amount, dest),
                                     Err(crate::error::SdkError::InsufficientLiquidity {
@@ -1003,23 +904,26 @@ impl Amm for KDEXAmm {
                                         quote_params.amount,
                                         required,
                                         available,
-                                        |amt| match oracle::calculate_constant_spread_quote(
-                                            &self.pool.fees,
-                                            amt,
-                                            destination_vault_amount,
-                                            trade_direction,
-                                            curve_data,
-                                            scope_account,
-                                            self.token_a_decimals,
-                                            self.token_b_decimals,
-                                        ) {
-                                            Ok((_src, dest, _fees)) => SwapFit::Fits(dest),
-                                            Err(
-                                                crate::error::SdkError::InsufficientLiquidity {
-                                                    ..
-                                                },
-                                            ) => SwapFit::ExceedsVault,
-                                            Err(_) => SwapFit::OtherError,
+                                        |amt| {
+                                            match oracle::calculate_constant_spread_quote_with_score(
+                                                &self.pool.fees,
+                                                amt,
+                                                destination_vault_amount,
+                                                trade_direction,
+                                                curve_data,
+                                                scope_account,
+                                                self.token_a_decimals,
+                                                self.token_b_decimals,
+                                                self.score_multiplier_bps(score),
+                                            ) {
+                                                Ok((_src, dest, _fees)) => SwapFit::Fits(dest),
+                                                Err(
+                                                    crate::error::SdkError::InsufficientLiquidity {
+                                                        ..
+                                                    },
+                                                ) => SwapFit::ExceedsVault,
+                                                Err(_) => SwapFit::OtherError,
+                                            }
                                         },
                                     ),
                                     Err(e) => return Err(e.into()),
@@ -1083,7 +987,7 @@ impl Amm for KDEXAmm {
                                     self.vault_capacity_target_bps,
                                 );
 
-                                match oracle::calculate_constant_spread_quote(
+                                match oracle::calculate_constant_spread_quote_with_score(
                                     &self.pool.fees,
                                     estimated_input,
                                     destination_vault_amount,
@@ -1092,6 +996,7 @@ impl Amm for KDEXAmm {
                                     scope_account,
                                     self.token_a_decimals,
                                     self.token_b_decimals,
+                                    self.score_multiplier_bps(score),
                                 ) {
                                     Ok((_src, dest, _fees)) => (estimated_input, dest),
                                     Err(crate::error::SdkError::InsufficientLiquidity {
@@ -1104,7 +1009,7 @@ impl Amm for KDEXAmm {
                                             available,
                                             self.vault_capacity_target_bps,
                                         );
-                                        match oracle::calculate_constant_spread_quote(
+                                        match oracle::calculate_constant_spread_quote_with_score(
                                             &self.pool.fees,
                                             capped_input,
                                             destination_vault_amount,
@@ -1113,6 +1018,7 @@ impl Amm for KDEXAmm {
                                             scope_account,
                                             self.token_a_decimals,
                                             self.token_b_decimals,
+                                            self.score_multiplier_bps(score),
                                         ) {
                                             Ok((_src, dest, _fees)) => (capped_input, dest),
                                             Err(e) => return Err(e.into()),
@@ -1125,7 +1031,7 @@ impl Amm for KDEXAmm {
                         CurveType::InventorySkewOracle => {
                             if self.vault_capacity_target_bps == 0 {
                                 // No cap: quote directly, binary search on overflow
-                                match oracle::calculate_inventory_skew_quote(
+                                match oracle::calculate_inventory_skew_quote_with_score(
                                     &self.pool.fees,
                                     quote_params.amount,
                                     source_vault_amount,
@@ -1135,6 +1041,7 @@ impl Amm for KDEXAmm {
                                     scope_account,
                                     self.token_a_decimals,
                                     self.token_b_decimals,
+                                    self.score_multiplier_bps(score),
                                 ) {
                                     Ok((_src, dest, _fees)) => (quote_params.amount, dest),
                                     Err(crate::error::SdkError::InsufficientLiquidity {
@@ -1144,24 +1051,27 @@ impl Amm for KDEXAmm {
                                         quote_params.amount,
                                         required,
                                         available,
-                                        |amt| match oracle::calculate_inventory_skew_quote(
-                                            &self.pool.fees,
-                                            amt,
-                                            source_vault_amount,
-                                            destination_vault_amount,
-                                            trade_direction,
-                                            curve_data,
-                                            scope_account,
-                                            self.token_a_decimals,
-                                            self.token_b_decimals,
-                                        ) {
-                                            Ok((_src, dest, _fees)) => SwapFit::Fits(dest),
-                                            Err(
-                                                crate::error::SdkError::InsufficientLiquidity {
-                                                    ..
-                                                },
-                                            ) => SwapFit::ExceedsVault,
-                                            Err(_) => SwapFit::OtherError,
+                                        |amt| {
+                                            match oracle::calculate_inventory_skew_quote_with_score(
+                                                &self.pool.fees,
+                                                amt,
+                                                source_vault_amount,
+                                                destination_vault_amount,
+                                                trade_direction,
+                                                curve_data,
+                                                scope_account,
+                                                self.token_a_decimals,
+                                                self.token_b_decimals,
+                                                self.score_multiplier_bps(score),
+                                            ) {
+                                                Ok((_src, dest, _fees)) => SwapFit::Fits(dest),
+                                                Err(
+                                                    crate::error::SdkError::InsufficientLiquidity {
+                                                        ..
+                                                    },
+                                                ) => SwapFit::ExceedsVault,
+                                                Err(_) => SwapFit::OtherError,
+                                            }
                                         },
                                     ),
                                     Err(e) => return Err(e.into()),
@@ -1225,7 +1135,7 @@ impl Amm for KDEXAmm {
                                     self.vault_capacity_target_bps,
                                 );
 
-                                match oracle::calculate_inventory_skew_quote(
+                                match oracle::calculate_inventory_skew_quote_with_score(
                                     &self.pool.fees,
                                     estimated_input,
                                     source_vault_amount,
@@ -1235,6 +1145,7 @@ impl Amm for KDEXAmm {
                                     scope_account,
                                     self.token_a_decimals,
                                     self.token_b_decimals,
+                                    self.score_multiplier_bps(score),
                                 ) {
                                     Ok((_src, dest, _fees)) => (estimated_input, dest),
                                     Err(crate::error::SdkError::InsufficientLiquidity {
@@ -1247,7 +1158,7 @@ impl Amm for KDEXAmm {
                                             available,
                                             self.vault_capacity_target_bps,
                                         );
-                                        match oracle::calculate_inventory_skew_quote(
+                                        match oracle::calculate_inventory_skew_quote_with_score(
                                             &self.pool.fees,
                                             capped_input,
                                             source_vault_amount,
@@ -1257,6 +1168,7 @@ impl Amm for KDEXAmm {
                                             scope_account,
                                             self.token_a_decimals,
                                             self.token_b_decimals,
+                                            self.score_multiplier_bps(score),
                                         ) {
                                             Ok((_src, dest, _fees)) => (capped_input, dest),
                                             Err(e) => return Err(e.into()),
@@ -1441,6 +1353,117 @@ impl Amm for KDEXAmm {
             }
         }
     }
+}
+
+impl Amm for KDEXAmm {
+    fn label(&self) -> String {
+        self.label.clone()
+    }
+
+    fn program_id(&self) -> Pubkey {
+        self.program_id
+    }
+
+    fn key(&self) -> Pubkey {
+        self.pool_key
+    }
+
+    fn get_reserve_mints(&self) -> Vec<Pubkey> {
+        vec![self.pool.token_a_mint, self.pool.token_b_mint]
+    }
+
+    fn get_accounts_to_update(&self) -> Vec<Pubkey> {
+        let mut accounts = vec![
+            self.pool.token_a_vault,
+            self.pool.token_b_vault,
+            self.pool.swap_curve,
+            self.pool.token_a_mint,
+            self.pool.token_b_mint,
+        ];
+
+        // For oracle curves, include Scope price feed if we can extract it
+        match self.pool.curve_type() {
+            CurveType::ConstantSpreadOracle | CurveType::InventorySkewOracle => {
+                // If we have curve data cached, we can extract the Scope address
+                if let Some(curve_data) = &self.curve_account_data {
+                    if curve_data.len() >= 40 {
+                        if let Ok(scope_feed) = Pubkey::try_from(&curve_data[8..40]) {
+                            accounts.push(scope_feed);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        accounts
+    }
+
+    fn from_keyed_account(keyed_account: &KeyedAccount, _amm_context: &AmmContext) -> Result<Self> {
+        KDEXAmm::new_from_keyed_account(keyed_account)
+    }
+
+    fn update(&mut self, accounts_map: &AccountMap) -> Result<()> {
+        // Update token vaults and detect token programs
+        self.token_a_vault = if let Some(account) = accounts_map.get(&self.pool.token_a_vault) {
+            // Detect token program from account owner
+            self.token_a_program = Some(account.owner);
+
+            let mut data = &account.data[..];
+            Some(TokenAccount::try_deserialize(&mut data)?)
+        } else {
+            None
+        };
+
+        self.token_b_vault = if let Some(account) = accounts_map.get(&self.pool.token_b_vault) {
+            // Detect token program from account owner
+            self.token_b_program = Some(account.owner);
+
+            let mut data = &account.data[..];
+            Some(TokenAccount::try_deserialize(&mut data)?)
+        } else {
+            None
+        };
+
+        // Update token decimals from mint accounts
+        // SPL Token Mint layout: mint_authority(36) + supply(8) + decimals(1)
+        // Decimals byte is at offset 44 for both SPL Token and Token-2022
+        if let Some(mint_account) = accounts_map.get(&self.pool.token_a_mint) {
+            if mint_account.data.len() > 44 {
+                self.token_a_decimals = mint_account.data[44];
+            }
+        }
+        if let Some(mint_account) = accounts_map.get(&self.pool.token_b_mint) {
+            if mint_account.data.len() > 44 {
+                self.token_b_decimals = mint_account.data[44];
+            }
+        }
+
+        // Update curve data
+        if let Some(curve_account) = accounts_map.get(&self.pool.swap_curve) {
+            // Cache curve account data for quotes
+            self.curve_account_data = Some(curve_account.data.clone());
+
+            // For oracle curves, cache the Scope price feed account if available
+            match self.pool.curve_type() {
+                CurveType::ConstantSpreadOracle | CurveType::InventorySkewOracle => {
+                    if let Some(scope_pubkey) = self.get_scope_price_feed(accounts_map) {
+                        if let Some(scope_account) = accounts_map.get(&scope_pubkey) {
+                            self.scope_price_feeds
+                                .insert(scope_pubkey, scope_account.clone());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        Ok(())
+    }
+
+    fn quote(&self, quote_params: &QuoteParams) -> Result<Quote> {
+        self.quote_with_score(quote_params, 0)
+    }
 
     fn get_swap_and_account_metas(&self, swap_params: &SwapParams) -> Result<SwapAndAccountMetas> {
         let SwapParams {
@@ -1494,8 +1517,8 @@ impl Amm for KDEXAmm {
             _ => self.program_id, // Use program_id as placeholder for non-oracle curves
         };
 
-        // Build account metas according to KDEX's Swap instruction
-        let account_metas = kdex_client::swap_ix::build_swap_account_metas(
+        // Build account metas for swap2
+        let account_metas = build_swap2_account_metas(
             *token_transfer_authority,
             self.pool_key,
             self.pool.swap_curve,
@@ -1530,4 +1553,60 @@ impl Amm for KDEXAmm {
     fn supports_exact_out(&self) -> bool {
         false
     }
+
+    fn is_active(&self) -> bool {
+        if self.is_withdrawals_only() {
+            return false;
+        }
+        if matches!(
+            self.pool.curve_type(),
+            CurveType::ConstantSpreadOracle | CurveType::InventorySkewOracle
+        ) && self.is_oracle_stale()
+        {
+            return false;
+        }
+        true
+    }
+}
+
+/// Build the account metas for a KDEX swap2 instruction.
+///
+/// Same layout as the regular swap but without the instructions sysvar
+/// and without score_signer (DFlow adds that on their side).
+#[allow(clippy::too_many_arguments)]
+fn build_swap2_account_metas(
+    token_transfer_authority: Pubkey,
+    pool_key: Pubkey,
+    swap_curve: Pubkey,
+    pool_authority: Pubkey,
+    source_mint: Pubkey,
+    destination_mint: Pubkey,
+    source_vault: Pubkey,
+    destination_vault: Pubkey,
+    source_fees_vault: Pubkey,
+    source_token_account: Pubkey,
+    destination_token_account: Pubkey,
+    source_token_program: Pubkey,
+    destination_token_program: Pubkey,
+    source_token_host_fees_account: Pubkey,
+    scope_price_feed: Pubkey,
+) -> Vec<solana_sdk::instruction::AccountMeta> {
+    use solana_sdk::instruction::AccountMeta;
+    vec![
+        AccountMeta::new_readonly(token_transfer_authority, true),
+        AccountMeta::new(pool_key, false),
+        AccountMeta::new_readonly(swap_curve, false),
+        AccountMeta::new_readonly(pool_authority, false),
+        AccountMeta::new_readonly(source_mint, false),
+        AccountMeta::new_readonly(destination_mint, false),
+        AccountMeta::new(source_vault, false),
+        AccountMeta::new(destination_vault, false),
+        AccountMeta::new(source_fees_vault, false),
+        AccountMeta::new(source_token_account, false),
+        AccountMeta::new(destination_token_account, false),
+        AccountMeta::new_readonly(source_token_program, false),
+        AccountMeta::new_readonly(destination_token_program, false),
+        AccountMeta::new(source_token_host_fees_account, false),
+        AccountMeta::new_readonly(scope_price_feed, false),
+    ]
 }

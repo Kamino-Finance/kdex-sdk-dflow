@@ -60,7 +60,9 @@ impl Deposit {
         remaining_accounts: &[solana_instruction::AccountMeta],
     ) -> solana_instruction::Instruction {
         let mut accounts = Vec::with_capacity(17 + remaining_accounts.len());
-        accounts.push(solana_instruction::AccountMeta::new(self.admin, true));
+        accounts.push(solana_instruction::AccountMeta::new_readonly(
+            self.admin, true,
+        ));
         accounts.push(solana_instruction::AccountMeta::new(self.pool, false));
         accounts.push(solana_instruction::AccountMeta::new_readonly(
             self.swap_curve,
@@ -177,7 +179,7 @@ impl DepositInstructionArgs {
 ///
 /// ### Accounts:
 ///
-///   0. `[writable, signer]` admin
+///   0. `[signer]` admin
 ///   1. `[writable]` pool
 ///   2. `[]` swap_curve
 ///   3. `[]` pool_authority
@@ -529,7 +531,10 @@ impl<'a, 'b> DepositCpi<'a, 'b> {
         remaining_accounts: &[(&'b solana_account_info::AccountInfo<'a>, bool, bool)],
     ) -> solana_program_error::ProgramResult {
         let mut accounts = Vec::with_capacity(17 + remaining_accounts.len());
-        accounts.push(solana_instruction::AccountMeta::new(*self.admin.key, true));
+        accounts.push(solana_instruction::AccountMeta::new_readonly(
+            *self.admin.key,
+            true,
+        ));
         accounts.push(solana_instruction::AccountMeta::new(*self.pool.key, false));
         accounts.push(solana_instruction::AccountMeta::new_readonly(
             *self.swap_curve.key,
@@ -642,7 +647,7 @@ impl<'a, 'b> DepositCpi<'a, 'b> {
 ///
 /// ### Accounts:
 ///
-///   0. `[writable, signer]` admin
+///   0. `[signer]` admin
 ///   1. `[writable]` pool
 ///   2. `[]` swap_curve
 ///   3. `[]` pool_authority

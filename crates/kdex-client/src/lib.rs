@@ -1,4 +1,3 @@
-#![allow(clippy::all)]
 //! KDEX Client
 //!
 //! Generated Rust client for the KDEX AMM program.
@@ -12,7 +11,7 @@
 //! - Optional oracle quote calculation (with "oracle" feature)
 
 // Re-export generated code
-#[allow(unused_imports)]
+#[allow(unused_imports, clippy::io_other_error)]
 mod _generated;
 
 pub use _generated::*;
@@ -47,6 +46,9 @@ pub mod scope_types;
 // Oracle quote calculation module (optional)
 #[cfg(feature = "oracle")]
 pub mod oracle;
+
+// Liquidity-aware quoting utilities (binary search, vault capacity estimation)
+pub mod liquidity;
 
 // Re-export commonly used types at crate root
 pub use pda::InitPoolPdas;

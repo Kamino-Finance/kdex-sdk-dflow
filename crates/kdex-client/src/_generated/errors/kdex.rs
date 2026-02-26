@@ -88,6 +88,12 @@ pub enum KdexError {
     /// 6025 - Oracle price is too old
     #[error("Oracle price is too old")]
     OraclePriceTooOld = 0x1789,
+    /// 6026 - Invalid input
+    #[error("Invalid input")]
+    InvalidInput = 0x178A,
+    /// 6027 - Invalid signer
+    #[error("Invalid signer")]
+    InvalidSigner = 0x178B,
 }
 
 impl From<KdexError> for solana_program_error::ProgramError {

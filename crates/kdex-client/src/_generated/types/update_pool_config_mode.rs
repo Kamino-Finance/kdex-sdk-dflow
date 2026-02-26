@@ -27,4 +27,5 @@ pub enum UpdatePoolConfigMode {
     PriceChain,
     MaxAgeSecs,
     PriceOffsetBps,
+    ScoreFactorBps,
 }
