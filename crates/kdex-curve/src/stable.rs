@@ -53,16 +53,16 @@ impl StableSwapParams {
 
     /// Create params from token decimals
     pub fn from_decimals(amp: u64, token_a_decimals: u8, token_b_decimals: u8) -> Result<Self> {
-        let (token_a_factor, token_b_factor) = if token_a_decimals > token_b_decimals {
-            // Safe: subtraction already guarded by comparison
-            let diff = token_a_decimals.saturating_sub(token_b_decimals);
-            (1, 10u64.saturating_pow(diff as u32))
-        } else if token_b_decimals > token_a_decimals {
-            // Safe: subtraction already guarded by comparison
-            let diff = token_b_decimals.saturating_sub(token_a_decimals);
-            (10u64.saturating_pow(diff as u32), 1)
-        } else {
-            (1, 1)
+        let (token_a_factor, token_b_factor) = match token_a_decimals.cmp(&token_b_decimals) {
+            std::cmp::Ordering::Greater => {
+                let diff = token_a_decimals.saturating_sub(token_b_decimals);
+                (1, 10u64.saturating_pow(diff as u32))
+            }
+            std::cmp::Ordering::Less => {
+                let diff = token_b_decimals.saturating_sub(token_a_decimals);
+                (10u64.saturating_pow(diff as u32), 1)
+            }
+            std::cmp::Ordering::Equal => (1, 1),
         };
         Ok(Self::new(amp, token_a_factor, token_b_factor))
     }
