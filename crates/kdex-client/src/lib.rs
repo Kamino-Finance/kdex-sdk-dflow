@@ -11,7 +11,7 @@
 //! - Optional oracle quote calculation (with "oracle" feature)
 
 // Re-export generated code
-#[allow(unused_imports, clippy::io_other_error)]
+#[allow(unknown_lints, unused_imports, clippy::io_other_error)]
 mod _generated;
 
 pub use _generated::*;
